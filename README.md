@@ -123,12 +123,17 @@ backoff_factor = 2.0    # Exponential backoff multiplier
 If the primary provider (OpenRouter) fails, the LLM call cascades to fallback providers:
 
 ```
-OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2, local)
+OpenRouter (primary) → HuggingFace (fallback 1) → Groq (fallback 2) → Ollama (fallback 3, local)
 ```
 
 Configured in `agents.toml`:
 
 ```toml
+[providers.huggingface]
+enabled = true
+default_model = "meta-llama/Llama-3.3-70B-Instruct"
+base_url = "https://router.huggingface.co/v1"
+
 [providers.groq]
 enabled = true
 default_model = "llama-3.3-70b-versatile"
@@ -143,11 +148,12 @@ Each agent can override the fallback model:
 
 ```toml
 [agents.websurfer]
+hf_model = "meta-llama/Llama-3.3-70B-Instruct"
 groq_model = "llama-3.3-70b-versatile"
 ollama_model = "gpt-oss:20b"
 ```
 
-Requires `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally).
+Requires `HF_TOKEN` and/or `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally). HuggingFace uses OpenAI-compatible API — no extra dependency needed.
 
 ## Project Structure
 
@@ -155,14 +161,14 @@ Requires `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally).
 agents.toml             # Agent config (models, temperatures, parameters)
 src/
   config.py             # pydantic-settings (.env) + AgentSettings (agents.toml)
-  models.py             # LLM factory with fallback chain (OpenRouter → Groq → Ollama)
+  models.py             # LLM factory with fallback chain (OpenRouter → HuggingFace → Groq → Ollama)
   schemas/              # TypedDict states + construct definitions
   agents/               # 7 agent implementations
   graphs/               # LangGraph workflow + review subgraph
   prompts/              # Prompt templates (from paper Table 2)
   tools/                # Calculator tool for precise c-value/d-value arithmetic
   utils/                # Console output (rich)
-tests/                  # 82 tests (schemas, agents, config, models, tools, graph structure)
+tests/                  # 97 tests (schemas, agents, config, models, tools, graph structure)
 notebooks/demo.ipynb    # End-to-end demo
 run.py                  # CLI entry point
 langgraph.json          # LangGraph Studio configuration

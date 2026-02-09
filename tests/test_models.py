@@ -18,6 +18,7 @@ def _make_settings(**overrides):
     defaults = {
         "openrouter_api_key": "test-key",
         "tavily_api_key": "test-key",
+        "hf_token": "test-hf-token",
         "groq_api_key": "test-groq-key",
     }
     defaults.update(overrides)
@@ -48,6 +49,57 @@ class TestCreateLlmFallbacks:
             llm = create_llm("item_writer", settings=settings)
         assert isinstance(llm, RunnableWithFallbacks)
         assert len(llm.fallbacks) == 1
+
+    def test_hf_fallback_when_enabled(self):
+        """When HuggingFace is enabled, create_llm includes HF in fallbacks."""
+        agent_settings = AgentSettings.model_validate({
+            "providers": {
+                "huggingface": {
+                    "enabled": True,
+                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
+                    "base_url": "https://router.huggingface.co/v1",
+                },
+            }
+        })
+        settings = _make_settings(hf_token="test-hf-token")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        assert isinstance(llm, RunnableWithFallbacks)
+        assert len(llm.fallbacks) == 1
+
+    def test_hf_skipped_without_token(self):
+        """HF enabled but no token → skip HF fallback."""
+        agent_settings = AgentSettings.model_validate({
+            "providers": {
+                "huggingface": {
+                    "enabled": True,
+                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
+                },
+            }
+        })
+        settings = _make_settings(hf_token="")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        assert isinstance(llm, ChatOpenAI)  # No fallbacks
+
+    def test_full_chain_hf_groq_and_ollama(self):
+        """When all three providers enabled, create_llm has 3 fallbacks."""
+        agent_settings = AgentSettings.model_validate({
+            "providers": {
+                "huggingface": {
+                    "enabled": True,
+                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
+                    "base_url": "https://router.huggingface.co/v1",
+                },
+                "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
+                "ollama": {"enabled": True, "default_model": "llama3.2:latest"},
+            }
+        })
+        settings = _make_settings(hf_token="test-hf-token", groq_api_key="test-groq-key")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        assert isinstance(llm, RunnableWithFallbacks)
+        assert len(llm.fallbacks) == 3
 
     def test_full_chain_groq_and_ollama(self):
         """When both Groq and Ollama enabled, create_llm has 2 fallbacks."""

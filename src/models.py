@@ -1,8 +1,9 @@
 """LLM factory with fallback provider chain.
 
 Primary: OpenRouter (Llama models)
-Fallback 1: Groq (cloud, fast inference)
-Fallback 2: Ollama (local)
+Fallback 1: HuggingFace Inference Providers (OpenAI-compatible API)
+Fallback 2: Groq (cloud, fast inference)
+Fallback 3: Ollama (local)
 
 Models, temperatures, and fallback providers are configured in agents.toml.
 """
@@ -29,7 +30,7 @@ def create_llm(
 
     Returns a ChatOpenAI (OpenRouter) instance. If fallback providers are
     enabled in agents.toml, wraps it with with_fallbacks() so that failures
-    automatically cascade: OpenRouter → Groq → Ollama.
+    automatically cascade: OpenRouter → HuggingFace → Groq → Ollama.
 
     If tools are provided, bind_tools() is applied to each provider BEFORE
     with_fallbacks(), since RunnableWithFallbacks does not expose bind_tools().
@@ -72,7 +73,25 @@ def create_llm(
     # Build fallback chain
     fallbacks = []
 
-    # Fallback 1: Groq
+    # Fallback 1: HuggingFace Inference Providers (OpenAI-compatible API)
+    if agent_settings.providers.huggingface.enabled and settings.hf_token:
+        hf_model = agent_settings.get_hf_model(agent_name)
+        hf_base_url = (
+            agent_settings.providers.huggingface.base_url
+            or "https://router.huggingface.co/v1"
+        )
+        hf_llm = ChatOpenAI(
+            model=hf_model,
+            temperature=temperature,
+            openai_api_key=settings.hf_token,
+            openai_api_base=hf_base_url,
+        )
+        if tools:
+            hf_llm = hf_llm.bind_tools(tools)
+        fallbacks.append(hf_llm)
+        logger.debug("hf_fallback_configured", agent=agent_name, model=hf_model)
+
+    # Fallback 2: Groq
     if agent_settings.providers.groq.enabled and settings.groq_api_key:
         from langchain_groq import ChatGroq
 
@@ -87,7 +106,7 @@ def create_llm(
         fallbacks.append(groq_llm)
         logger.debug("groq_fallback_configured", agent=agent_name, model=groq_model)
 
-    # Fallback 2: Ollama (local — no API key needed)
+    # Fallback 3: Ollama (local — no API key needed)
     if agent_settings.providers.ollama.enabled:
         from langchain_ollama import ChatOllama
 

@@ -24,6 +24,7 @@ class AgentConfig(BaseModel):
 
     model: str | None = None
     temperature: float | None = None
+    hf_model: str = ""       # Agent-specific HuggingFace model override
     groq_model: str = ""     # Agent-specific Groq model override
     ollama_model: str = ""   # Agent-specific Ollama model override
 
@@ -111,6 +112,7 @@ class ProviderConfig(BaseModel):
 class ProvidersTable(BaseModel):
     """The [providers] table from agents.toml."""
 
+    huggingface: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)
     ollama: ProviderConfig = Field(default_factory=ProviderConfig)
 
@@ -139,6 +141,11 @@ class AgentSettings(BaseModel):
         if agent_cfg.temperature is not None:
             return agent_cfg.temperature
         return 0.7  # fallback
+
+    def get_hf_model(self, agent_name: str) -> str:
+        """Get HuggingFace model: agent-specific > providers.huggingface.default_model."""
+        agent_cfg = self.get_agent_config(agent_name)
+        return agent_cfg.hf_model or self.providers.huggingface.default_model
 
     def get_groq_model(self, agent_name: str) -> str:
         """Get Groq model: agent-specific > providers.groq.default_model."""
@@ -186,7 +193,8 @@ class Settings(BaseSettings):
     # API Keys
     openrouter_api_key: str
     tavily_api_key: str
-    groq_api_key: str = ""  # Optional — fallback provider
+    hf_token: str = ""      # Optional — HuggingFace fallback provider
+    groq_api_key: str = ""  # Optional — Groq fallback provider
 
     # LangSmith (set LANGCHAIN_TRACING_V2=true to enable)
     langchain_tracing_v2: bool = False

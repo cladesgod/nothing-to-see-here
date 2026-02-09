@@ -91,8 +91,10 @@ class TestProviderConfig:
 
     def test_provider_defaults_disabled(self):
         settings = AgentSettings()
+        assert settings.providers.huggingface.enabled is False
         assert settings.providers.groq.enabled is False
         assert settings.providers.ollama.enabled is False
+        assert settings.providers.huggingface.default_model == ""
         assert settings.providers.groq.default_model == ""
         assert settings.providers.ollama.default_model == ""
 
@@ -144,6 +146,36 @@ class TestProviderConfig:
         settings = AgentSettings.model_validate(data)
         assert settings.get_ollama_model("bias_reviewer") == "default-ollama"
 
+    def test_hf_provider_from_dict(self):
+        data = {
+            "providers": {
+                "huggingface": {
+                    "enabled": True,
+                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
+                    "base_url": "https://router.huggingface.co/v1",
+                },
+            }
+        }
+        settings = AgentSettings.model_validate(data)
+        assert settings.providers.huggingface.enabled is True
+        assert settings.providers.huggingface.default_model == "meta-llama/Llama-3.3-70B-Instruct"
+        assert settings.providers.huggingface.base_url == "https://router.huggingface.co/v1"
+
+    def test_get_hf_model_agent_override(self):
+        data = {
+            "providers": {"huggingface": {"default_model": "default-hf"}},
+            "agents": {"content_reviewer": {"hf_model": "custom-hf-model"}},
+        }
+        settings = AgentSettings.model_validate(data)
+        assert settings.get_hf_model("content_reviewer") == "custom-hf-model"
+
+    def test_get_hf_model_falls_back_to_default(self):
+        data = {
+            "providers": {"huggingface": {"default_model": "default-hf"}},
+        }
+        settings = AgentSettings.model_validate(data)
+        assert settings.get_hf_model("item_writer") == "default-hf"
+
 
 class TestCalculatorConfig:
     """Test calculator tool configuration for content reviewer."""
@@ -191,6 +223,8 @@ class TestAgentsTomlFile:
         with open(toml_path, "rb") as f:
             data = tomllib.load(f)
         settings = AgentSettings.model_validate(data)
+        assert settings.providers.huggingface.enabled is True
+        assert settings.providers.huggingface.default_model == "meta-llama/Llama-3.3-70B-Instruct"
         assert settings.providers.groq.enabled is True
         assert settings.providers.groq.default_model == "llama-3.3-70b-versatile"
         assert settings.providers.ollama.enabled is True

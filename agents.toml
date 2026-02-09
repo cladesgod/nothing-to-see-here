@@ -16,8 +16,13 @@ initial_interval = 1.0     # Seconds before first retry
 backoff_factor = 2.0       # Exponential backoff multiplier
 
 # ---- Fallback Providers ----
-# Chain: OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2)
+# Chain: OpenRouter (primary) → HuggingFace (fallback 1) → Groq (fallback 2) → Ollama (fallback 3)
 # Set enabled = false to skip a provider.
+
+[providers.huggingface]
+enabled = true
+default_model = "meta-llama/Llama-3.3-70B-Instruct"
+base_url = "https://router.huggingface.co/v1"
 
 [providers.groq]
 enabled = true
@@ -29,7 +34,7 @@ default_model = "gpt-oss:20b"
 base_url = "http://localhost:11434"
 
 # ---- Agent Configurations ----
-# groq_model / ollama_model: agent-specific fallback model overrides
+# hf_model / groq_model / ollama_model: agent-specific fallback model overrides
 # If omitted, uses [providers.X].default_model
 
 [agents.websurfer]

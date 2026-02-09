@@ -36,10 +36,11 @@ langgraph dev --tunnel
 
 - **Python 3.13** (requires >=3.11)
 - **LangGraph** - graph orchestration, StateGraph, subgraphs, interrupt()
-- **LangChain OpenAI** - ChatOpenAI pointed at OpenRouter
+- **LangChain OpenAI** - ChatOpenAI pointed at OpenRouter and HuggingFace
 - **LangChain Groq** - ChatGroq fallback provider
 - **LangChain Ollama** - ChatOllama local fallback provider
 - **OpenRouter** - LLM provider (Llama 4 models, primary)
+- **HuggingFace Inference Providers** - fallback provider (OpenAI-compatible API, Llama 3.3)
 - **Tavily** - web search for WebSurfer agent
 - **Pydantic / pydantic-settings** - config
 - **structlog** - structured logging
@@ -174,6 +175,11 @@ max_attempts = 3           # LangGraph RetryPolicy (node level)
 initial_interval = 1.0
 backoff_factor = 2.0
 
+[providers.huggingface]
+enabled = true
+default_model = "meta-llama/Llama-3.3-70B-Instruct"
+base_url = "https://router.huggingface.co/v1"
+
 [providers.groq]
 enabled = true
 default_model = "llama-3.3-70b-versatile"
@@ -185,15 +191,16 @@ base_url = "http://localhost:11434"
 ```
 
 - **Layer 1:** LangGraph `RetryPolicy` on all LLM nodes (not critic — deterministic, not human_feedback — interrupt)
-- **Layer 2:** `create_llm()` uses `with_fallbacks()`: OpenRouter → Groq → Ollama
-- Per-agent fallback model overrides: `groq_model` / `ollama_model` in `[agents.X]`
+- **Layer 2:** `create_llm()` uses `with_fallbacks()`: OpenRouter → HuggingFace → Groq → Ollama
+- HuggingFace uses OpenAI-compatible API (`ChatOpenAI` with different `base_url`) — no extra dependency
+- Per-agent fallback model overrides: `hf_model` / `groq_model` / `ollama_model` in `[agents.X]`
 - Both layers compose: each retry runs the full fallback chain
 
 ### `.env` — Secrets Only
 
 Required keys: `OPENROUTER_API_KEY`, `TAVILY_API_KEY`
 
-Optional: `GROQ_API_KEY` (for Groq fallback), `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`
+Optional: `HF_TOKEN` (for HuggingFace fallback), `GROQ_API_KEY` (for Groq fallback), `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`
 
 Model selection is done exclusively via `agents.toml` (no env var overrides).
 
@@ -211,7 +218,7 @@ Quality assessment is done by LLM reviewers in natural language. When `calculato
 ## Testing
 
 ```bash
-pytest tests/ -v          # all tests (82 total)
+pytest tests/ -v          # all tests (97 total)
 pytest tests/test_schemas.py   # construct + state schema tests
 pytest tests/test_agents.py    # critic node + router + lewmod + content reviewer tests
 pytest tests/test_workflow.py  # graph structure + retry policy tests
@@ -232,6 +239,14 @@ Tests use mock API keys (`OPENROUTER_API_KEY=test-key`) set in `conftest.py`. No
 All significant additions and changes to the codebase are logged here.
 
 **Iyilestirme sonuclari:** Her iyilestirme sonrasinda sonuclar `IMPROVEMENTS.md`'ye eklenmeli (sorun → cozum → sonuc formati).
+
+### 2026-02-09: HuggingFace Inference Provider (Fallback)
+- **New feature:** HuggingFace Inference Providers added as a fallback in the provider chain. Chain is now: OpenRouter → HuggingFace → Groq → Ollama.
+- **Zero new dependencies:** HF Inference Providers expose an OpenAI-compatible API (`https://router.huggingface.co/v1`). Reuses `ChatOpenAI` with different `base_url` and `api_key` — no `langchain-huggingface` package needed.
+- **Config:** `agents.toml` `[providers.huggingface]` section (enabled, default_model, base_url). Per-agent `hf_model` overrides in `[agents.X]`. `HF_TOKEN` env var in `.env`.
+- **Default model:** `meta-llama/Llama-3.3-70B-Instruct` (Llama 4 models not yet available on HF Inference Providers).
+- **Tests:** 97 total (was 82). Added 3 HF config tests, 3 HF fallback chain tests.
+- **Files changed:** `agents.toml`, `src/config.py`, `src/models.py`, `.env.example`, `tests/conftest.py`, `tests/test_config.py`, `tests/test_models.py`, `CLAUDE.md`
 
 ### 2026-02-09: Calculator Tool for Content Reviewer
 - **New feature:** Optional calculator tool for precise c-value/d-value computation in the Content Reviewer agent. Controlled via `calculator = true/false` in `agents.toml` `[agents.content_reviewer]`.
