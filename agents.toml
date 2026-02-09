@@ -1,0 +1,82 @@
+# agents.toml — LM-AIG Agent Configuration
+# Paper-recommended values are the defaults.
+# Only override what you need to change.
+#
+# If an agent has no "model" key, it falls back to [defaults].model
+# If an agent has no "groq_model"/"ollama_model", it falls back to [providers.X].default_model
+
+[defaults]
+model = "meta-llama/llama-4-maverick"
+
+# ---- Retry Policy (LangGraph node-level retry) ----
+
+[retry]
+max_attempts = 3           # Total attempts per node (1 initial + 2 retries)
+initial_interval = 1.0     # Seconds before first retry
+backoff_factor = 2.0       # Exponential backoff multiplier
+
+# ---- Fallback Providers ----
+# Chain: OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2)
+# Set enabled = false to skip a provider.
+
+[providers.groq]
+enabled = true
+default_model = "llama-3.3-70b-versatile"
+
+[providers.ollama]
+enabled = true
+default_model = "gpt-oss:20b"
+base_url = "http://localhost:11434"
+
+# ---- Agent Configurations ----
+# groq_model / ollama_model: agent-specific fallback model overrides
+# If omitted, uses [providers.X].default_model
+
+[agents.websurfer]
+model = "meta-llama/llama-4-scout"
+temperature = 0.0          # Factual accuracy (paper)
+max_results = 5            # Tavily search results to retrieve
+search_depth = "advanced"  # Tavily search depth: "basic" or "advanced"
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.item_writer]
+model = "meta-llama/llama-4-maverick"
+temperature = 1.0          # Creative diversity (paper)
+num_items = 8              # Items to generate per cycle
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.content_reviewer]
+model = "meta-llama/llama-4-maverick"
+temperature = 0.0          # Deterministic evaluation
+calculator = true           # Enable calculator tool for c-value/d-value computation
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.linguistic_reviewer]
+model = "meta-llama/llama-4-maverick"
+temperature = 0.0          # Deterministic evaluation
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.bias_reviewer]
+model = "meta-llama/llama-4-maverick"
+temperature = 0.0          # Deterministic evaluation
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.meta_editor]
+model = "meta-llama/llama-4-maverick"
+temperature = 0.3          # Slight creativity for synthesis
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[agents.lewmod]
+model = "meta-llama/llama-4-maverick"
+temperature = 0.3          # Balanced expert evaluation
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
+[workflow]
+max_revisions = 3          # Default revision rounds (CLI --max-revisions overrides)

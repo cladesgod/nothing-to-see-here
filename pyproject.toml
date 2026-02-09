@@ -1,0 +1,38 @@
+[project]
+name = "lm-aig"
+version = "0.1.0"
+description = "LLM-based Multi-Agent Automatic Item Generation system"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph",
+    "langchain-openai",
+    "langchain-core",
+    "pydantic",
+    "pydantic-settings",
+    "structlog",
+    "tavily-python",
+    "rich",
+    "langchain-groq",
+    "langchain-ollama",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ipykernel",
+    "jupyter",
+    "langgraph-cli[inmem]",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
