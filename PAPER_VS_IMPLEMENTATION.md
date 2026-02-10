@@ -157,7 +157,6 @@ All temperatures match the paper's recommendations exactly.
 7. **LewMod (automated feedback)** - `--lewmod` flag replaces human-in-the-loop with an LLM-based senior psychometrician agent. Evaluates items holistically and decides APPROVE or REVISE. No max_revisions limit — LewMod controls its own termination. Same graph structure, only the feedback node function is swapped.
 8. **Centralized config** - `agents.toml` for all agent parameters (models, temperatures, num_items, max_results, etc.). Pydantic-validated via `AgentSettings` model.
 9. **Retry + Fallback provider chain** - Two-layer reliability: (a) LangGraph `RetryPolicy` for node-level automatic retry with exponential backoff. (b) `with_fallbacks()` for LLM-level fallback: OpenRouter → Groq → Ollama. Both layers compose — each retry attempt runs the full fallback chain. Configured via `agents.toml` `[retry]` and `[providers]` sections. Per-agent fallback model overrides supported.
-10. **Calculator tool for Content Reviewer** - Optional LangChain `@tool` for precise c-value/d-value arithmetic. When `calculator = true` in `agents.toml`, the Content Reviewer uses `bind_tools()` to call a Python calculator instead of relying on LLM mental math. Safe `eval()` with character whitelist. Toggle-controlled — disabled by default.
 
 ---
 

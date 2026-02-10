@@ -24,7 +24,6 @@ class AgentConfig(BaseModel):
 
     model: str | None = None
     temperature: float | None = None
-    hf_model: str = ""       # Agent-specific HuggingFace model override
     groq_model: str = ""     # Agent-specific Groq model override
     ollama_model: str = ""   # Agent-specific Ollama model override
 
@@ -35,6 +34,8 @@ class WebSurferConfig(AgentConfig):
     temperature: float = 0.0
     max_results: int = 5
     search_depth: str = "advanced"
+    cache_enabled: bool = True
+    cache_ttl_hours: int = 24
 
 
 class ItemWriterConfig(AgentConfig):
@@ -46,7 +47,6 @@ class ItemWriterConfig(AgentConfig):
 
 class ContentReviewerConfig(AgentConfig):
     temperature: float = 0.0
-    calculator: bool = False  # Enable calculator tool for c-value/d-value computation
 
 
 class LinguisticReviewerConfig(AgentConfig):
@@ -85,12 +85,16 @@ class DefaultsTable(BaseModel):
     """The [defaults] table from agents.toml."""
 
     model: str = "meta-llama/llama-4-maverick"
+    timeout: int = 120               # Request timeout per provider (seconds)
+    min_response_length: int = 50    # Min chars — below this, try next provider
 
 
 class WorkflowTable(BaseModel):
     """The [workflow] table from agents.toml."""
 
     max_revisions: int = 3
+    memory_enabled: bool = True   # Anti-homogeneity: use prior run items
+    memory_limit: int = 5         # Max prior runs to include
 
 
 class RetryConfig(BaseModel):
@@ -112,9 +116,21 @@ class ProviderConfig(BaseModel):
 class ProvidersTable(BaseModel):
     """The [providers] table from agents.toml."""
 
-    huggingface: ProviderConfig = Field(default_factory=ProviderConfig)
     groq: ProviderConfig = Field(default_factory=ProviderConfig)
     ollama: ProviderConfig = Field(default_factory=ProviderConfig)
+
+
+class EvalConfig(BaseModel):
+    """The [eval] table from agents.toml — evaluation pipeline settings."""
+
+    enabled: bool = True
+    judge_model: str = ""  # Falls back to defaults.model if empty
+    judge_temperature: float = 0.0
+    content_validity_threshold: float = 0.83
+    distinctiveness_threshold: float = 0.35
+    linguistic_threshold: float = 0.8
+    bias_threshold: float = 0.9
+    dataset_name: str = "lm-aig-eval"
 
 
 class AgentSettings(BaseModel):
@@ -125,6 +141,7 @@ class AgentSettings(BaseModel):
     workflow: WorkflowTable = Field(default_factory=WorkflowTable)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     providers: ProvidersTable = Field(default_factory=ProvidersTable)
+    eval: EvalConfig = Field(default_factory=EvalConfig)
 
     def get_agent_config(self, agent_name: str) -> AgentConfig:
         """Get the config for a specific agent."""
@@ -132,6 +149,9 @@ class AgentSettings(BaseModel):
 
     def get_model(self, agent_name: str) -> str:
         """Get the resolved model for an agent (agent-specific > defaults)."""
+        # Special case: eval judge uses eval.judge_model
+        if agent_name == "eval_judge" and self.eval.judge_model:
+            return self.eval.judge_model
         agent_cfg = self.get_agent_config(agent_name)
         return agent_cfg.model or self.defaults.model
 
@@ -141,11 +161,6 @@ class AgentSettings(BaseModel):
         if agent_cfg.temperature is not None:
             return agent_cfg.temperature
         return 0.7  # fallback
-
-    def get_hf_model(self, agent_name: str) -> str:
-        """Get HuggingFace model: agent-specific > providers.huggingface.default_model."""
-        agent_cfg = self.get_agent_config(agent_name)
-        return agent_cfg.hf_model or self.providers.huggingface.default_model
 
     def get_groq_model(self, agent_name: str) -> str:
         """Get Groq model: agent-specific > providers.groq.default_model."""
@@ -193,7 +208,6 @@ class Settings(BaseSettings):
     # API Keys
     openrouter_api_key: str
     tavily_api_key: str
-    hf_token: str = ""      # Optional — HuggingFace fallback provider
     groq_api_key: str = ""  # Optional — Groq fallback provider
 
     # LangSmith (set LANGCHAIN_TRACING_V2=true to enable)

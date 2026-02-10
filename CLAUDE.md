@@ -36,11 +36,10 @@ langgraph dev --tunnel
 
 - **Python 3.13** (requires >=3.11)
 - **LangGraph** - graph orchestration, StateGraph, subgraphs, interrupt()
-- **LangChain OpenAI** - ChatOpenAI pointed at OpenRouter and HuggingFace
+- **LangChain OpenAI** - ChatOpenAI pointed at OpenRouter
 - **LangChain Groq** - ChatGroq fallback provider
 - **LangChain Ollama** - ChatOllama local fallback provider
 - **OpenRouter** - LLM provider (Llama 4 models, primary)
-- **HuggingFace Inference Providers** - fallback provider (OpenAI-compatible API, Llama 3.3)
 - **Tavily** - web search for WebSurfer agent
 - **Pydantic / pydantic-settings** - config
 - **structlog** - structured logging
@@ -90,7 +89,7 @@ src/
     critic.py           # critic_node (visible node) + critic_router (conditional edge)
     web_surfer.py       # Tavily search + LLM summary (temp=0)
     item_writer.py      # generates/revises items as natural language text (temp=1.0)
-    content_reviewer.py # Colquitt method: markdown table output (temp=0), optional calculator tool
+    content_reviewer.py # Colquitt method: markdown table output (temp=0)
     linguistic_reviewer.py  # 4 criteria, narrative evaluation (temp=0)
     bias_reviewer.py    # 5-point bias scale, narrative evaluation (temp=0)
     meta_editor.py      # synthesizes reviews → keep/revise/discard text (temp=0.3)
@@ -98,10 +97,11 @@ src/
   graphs/
     review_chain.py     # inner subgraph (parallel reviewers → meta_editor)
     main_workflow.py    # outer graph (critic hub-spoke), module-level `graph` for langgraph dev
+  persistence/
+    db.py               # SQLite connection + 6-table schema (WAL mode)
+    repository.py       # CRUD functions for all pipeline data + get_previous_items()
   prompts/
     templates.py        # all system/task prompts per agent
-  tools/
-    calculator.py       # @tool calculate() for precise c-value/d-value arithmetic
   utils/
     console.py          # rich console output helpers (agent messages, phase transitions, panels)
 ```
@@ -113,9 +113,10 @@ src/
 - Phases are lowercase strings: `web_research`, `item_generation`, `review`, `human_feedback`, `revision`, `done`
 
 ### State Pattern
-- Outer graph: `MainState` (TypedDict, `total=False`). `items_text` and `review_text` are plain strings. `messages` uses `operator.add` (log accumulation).
+- Outer graph: `MainState` (TypedDict, `total=False`). `items_text` and `review_text` are plain strings. `messages` uses `operator.add` (log accumulation). `run_id` and `db_path` for persistence. `previously_approved_items` uses `operator.add` for cross-round diversity.
 - Inner graph: `ReviewChainState` (TypedDict, `total=False`). All fields are plain strings (content_review, linguistic_review, bias_review, meta_review).
 - Nodes return partial dicts. Only returned keys get updated.
+- DB persistence: each node opens its own `sqlite3.connect(db_path)` (not serializable in state).
 
 ### Agent Communication
 - **Natural language text** — agents communicate via plain text strings, matching the paper's AutoGen chat-based approach (Lee et al., 2025)
@@ -143,6 +144,8 @@ Centralized configuration for all agent parameters. Located in project root.
 ```toml
 [defaults]
 model = "meta-llama/llama-4-maverick"
+timeout = 120                # Request timeout per provider (seconds)
+min_response_length = 50     # Min chars — below this, try next provider
 
 [agents.websurfer]
 model = "meta-llama/llama-4-scout"
@@ -161,6 +164,8 @@ temperature = 0.0
 
 [workflow]
 max_revisions = 3
+memory_enabled = true      # Use previous run items for diversity (anti-homogeneity)
+memory_limit = 5           # How many prior runs' items to include
 ```
 
 Uses `tomllib` (Python stdlib). Loaded via `get_agent_settings()` in `src/config.py`. Pydantic-validated.
@@ -175,11 +180,6 @@ max_attempts = 3           # LangGraph RetryPolicy (node level)
 initial_interval = 1.0
 backoff_factor = 2.0
 
-[providers.huggingface]
-enabled = true
-default_model = "meta-llama/Llama-3.3-70B-Instruct"
-base_url = "https://router.huggingface.co/v1"
-
 [providers.groq]
 enabled = true
 default_model = "llama-3.3-70b-versatile"
@@ -191,22 +191,22 @@ base_url = "http://localhost:11434"
 ```
 
 - **Layer 1:** LangGraph `RetryPolicy` on all LLM nodes (not critic — deterministic, not human_feedback — interrupt)
-- **Layer 2:** `create_llm()` uses `with_fallbacks()`: OpenRouter → HuggingFace → Groq → Ollama
-- HuggingFace uses OpenAI-compatible API (`ChatOpenAI` with different `base_url`) — no extra dependency
-- Per-agent fallback model overrides: `hf_model` / `groq_model` / `ollama_model` in `[agents.X]`
+- **Layer 2:** `create_llm()` uses `with_fallbacks()`: OpenRouter → Groq → Ollama. Each provider is piped with a response-length validator (`LLM | validator`).
+- **Fallback triggers:** Exceptions (network errors, rate limits), timeouts (`defaults.timeout`), and short responses (`defaults.min_response_length` chars).
+- Per-agent fallback model overrides: `groq_model` / `ollama_model` in `[agents.X]`
 - Both layers compose: each retry runs the full fallback chain
 
 ### `.env` — Secrets Only
 
 Required keys: `OPENROUTER_API_KEY`, `TAVILY_API_KEY`
 
-Optional: `HF_TOKEN` (for HuggingFace fallback), `GROQ_API_KEY` (for Groq fallback), `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`
+Optional: `GROQ_API_KEY` (for Groq fallback), `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`
 
 Model selection is done exclusively via `agents.toml` (no env var overrides).
 
 ## Quality Thresholds (Colquitt et al., 2019)
 
-Quality assessment is done by LLM reviewers in natural language. When `calculator = true` in `agents.toml`, the Content Reviewer uses a calculator tool for precise c-value/d-value computation. Reviewers are prompted with these criteria:
+Quality assessment is done by LLM reviewers in natural language. Reviewers are prompted with these criteria:
 
 | Metric | Formula | Threshold |
 |--------|---------|-----------|
@@ -218,13 +218,14 @@ Quality assessment is done by LLM reviewers in natural language. When `calculato
 ## Testing
 
 ```bash
-pytest tests/ -v          # all tests (97 total)
+pytest tests/ -v               # all tests (144 total)
 pytest tests/test_schemas.py   # construct + state schema tests
-pytest tests/test_agents.py    # critic node + router + lewmod + content reviewer tests
+pytest tests/test_agents.py    # critic node + router + lewmod tests
 pytest tests/test_workflow.py  # graph structure + retry policy tests
-pytest tests/test_config.py   # agents.toml config, retry, provider, calculator tests
-pytest tests/test_models.py   # LLM factory + fallback chain + tool binding tests
-pytest tests/test_tools.py   # calculator tool tests
+pytest tests/test_config.py    # agents.toml config, retry, provider tests
+pytest tests/test_models.py    # LLM factory + fallback chain tests
+pytest tests/test_evals.py     # golden dataset, score parsing, caching
+pytest tests/test_persistence.py  # SQLite DB, CRUD, anti-homogeneity queries
 ```
 
 Tests use mock API keys (`OPENROUTER_API_KEY=test-key`) set in `conftest.py`. No real API calls in tests.
@@ -240,23 +241,24 @@ All significant additions and changes to the codebase are logged here.
 
 **Iyilestirme sonuclari:** Her iyilestirme sonrasinda sonuclar `IMPROVEMENTS.md`'ye eklenmeli (sorun → cozum → sonuc formati).
 
-### 2026-02-09: HuggingFace Inference Provider (Fallback)
-- **New feature:** HuggingFace Inference Providers added as a fallback in the provider chain. Chain is now: OpenRouter → HuggingFace → Groq → Ollama.
-- **Zero new dependencies:** HF Inference Providers expose an OpenAI-compatible API (`https://router.huggingface.co/v1`). Reuses `ChatOpenAI` with different `base_url` and `api_key` — no `langchain-huggingface` package needed.
-- **Config:** `agents.toml` `[providers.huggingface]` section (enabled, default_model, base_url). Per-agent `hf_model` overrides in `[agents.X]`. `HF_TOKEN` env var in `.env`.
-- **Default model:** `meta-llama/Llama-3.3-70B-Instruct` (Llama 4 models not yet available on HF Inference Providers).
-- **Tests:** 97 total (was 82). Added 3 HF config tests, 3 HF fallback chain tests.
-- **Files changed:** `agents.toml`, `src/config.py`, `src/models.py`, `.env.example`, `tests/conftest.py`, `tests/test_config.py`, `tests/test_models.py`, `CLAUDE.md`
+### 2026-02-10: Smart Fallback — Timeout + Min Response Length
+- **New feature:** Two additional fallback triggers for the provider chain (OpenRouter → Groq → Ollama). Previously only exceptions triggered a fallback.
+- **Timeout:** Configurable per-provider request timeout (`defaults.timeout = 120`). When exceeded, the request raises an exception and `with_fallbacks()` cascades to the next provider.
+- **Min response length:** Each provider is piped with a response-length validator (`LLM | validator`). Responses below `defaults.min_response_length` chars raise a `ValueError`, triggering the next provider. This catches "suspiciously short" responses that would otherwise pass through.
+- **Architecture:** Uses `RunnableLambda` pipe pattern: `primary | validator` → each fallback also piped. `with_fallbacks()` catches both timeout exceptions and short-response ValueErrors.
+- **Config:** `agents.toml` `[defaults]` section: `timeout = 120`, `min_response_length = 50`.
+- **Tests:** 144 total (was 133). Added 7 validator tests + 2 chain structure tests + 2 config tests.
+- **Files changed:** `agents.toml`, `src/config.py`, `src/models.py`, `tests/test_models.py`, `tests/test_config.py`, `CLAUDE.md`
 
-### 2026-02-09: Calculator Tool for Content Reviewer
-- **New feature:** Optional calculator tool for precise c-value/d-value computation in the Content Reviewer agent. Controlled via `calculator = true/false` in `agents.toml` `[agents.content_reviewer]`.
-- **Architecture:** LangChain `@tool` decorator + `bind_tools()`. Tool binding applied per-provider BEFORE `with_fallbacks()` (since `RunnableWithFallbacks` doesn't expose `bind_tools()`). `create_llm()` now accepts optional `tools` parameter.
-- **Tool:** `src/tools/calculator.py` — safe `eval()` with character whitelist (digits + operators only). Returns 4-decimal precision.
-- **Prompt:** `CONTENT_REVIEWER_SYSTEM_WITH_TOOL` variant instructs LLM to always use the tool for arithmetic.
-- **Toggle:** `calculator = false` (default) → standard flow, no changes. `calculator = true` → tool binding + tool execution loop.
-- **Tests:** 82 total (was 61). Added 13 calculator tool tests, 3 config tests, 3 model tool-binding tests, 2 content reviewer tests.
-- **New files:** `src/tools/__init__.py`, `src/tools/calculator.py`, `tests/test_tools.py`
-- **Files changed:** `agents.toml`, `src/config.py`, `src/models.py`, `src/agents/content_reviewer.py`, `src/prompts/templates.py`, `tests/test_config.py`, `tests/test_models.py`, `tests/test_agents.py`, `CLAUDE.md`, `IMPROVEMENTS.md`, `PAPER_VS_IMPLEMENTATION.md`, `README.md`
+### 2026-02-10: SQLite Persistence + Anti-Homogeneity Guard
+- **New feature:** SQLite persistence layer (`src/persistence/`) for full pipeline state. 6 tables: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`, `eval_results`. Zero new dependencies (`sqlite3` is Python stdlib).
+- **Anti-homogeneity:** `get_previous_items()` fetches final items from completed runs for the same construct. Item Writer reads these from DB and injects into prompts to push for diversity. `previously_approved_items` state field accumulates across revision rounds within a run. Configurable via `agents.toml`: `memory_enabled` (on/off) and `memory_limit` (how many prior runs).
+- **Prompt changes:** `ITEM_WRITER_GENERATE` and `ITEM_WRITER_REVISE` get `{previously_approved_items}` section. `META_EDITOR_TASK` gets Rule 6 (inter-item similarity check).
+- **Agent persistence:** All agents now persist to DB — WebSurfer (research), ItemWriter (generation rounds), ReviewChain (reviews), Human/LewMod (feedback). Each node opens its own `sqlite3.connect(db_path)`.
+- **State changes:** `MainState` gets `run_id: str`, `db_path: str`, `previously_approved_items: Annotated[list[str], operator.add]`.
+- **Tests:** 133 total (was 103). Added 28 persistence tests (DB schema, CRUD, anti-homogeneity queries, `_format_item_history` helper) + 2 memory config tests.
+- **New files:** `src/persistence/__init__.py`, `src/persistence/db.py`, `src/persistence/repository.py`, `tests/test_persistence.py`
+- **Files changed:** `src/schemas/state.py`, `src/agents/item_writer.py`, `src/agents/web_surfer.py`, `src/agents/lewmod.py`, `src/graphs/main_workflow.py`, `src/prompts/templates.py`, `run.py`, `.gitignore`, `FUTURE.md`, `CLAUDE.md`
 
 ### 2026-02-09: Retry Mechanism + Fallback Provider Chain
 - **New feature:** Two-layer reliability for all LLM calls. (1) LangGraph `RetryPolicy` on all LLM nodes with exponential backoff. (2) `with_fallbacks()` provider chain: OpenRouter → Groq → Ollama.

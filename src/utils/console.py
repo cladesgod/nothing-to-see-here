@@ -31,6 +31,20 @@ AGENT_COLORS = {
 }
 
 
+def validate_llm_response(content: str | None, agent_name: str) -> str:
+    """Validate that an LLM response is non-empty.
+
+    Raises ValueError if the response is None or empty, which will be caught
+    by the LangGraph RetryPolicy and trigger a retry with the fallback chain.
+    """
+    if not content or not content.strip():
+        raise ValueError(
+            f"{agent_name} received an empty response from the LLM. "
+            "This will trigger a retry via the RetryPolicy."
+        )
+    return content.strip()
+
+
 def print_header(
     construct: str, model: str, max_revisions: int, lewmod: bool = False
 ) -> None:

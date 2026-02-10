@@ -97,9 +97,12 @@ Generate {num_items} Likert-type scale items for the following construct dimensi
 - Generate exactly {num_items} items as a numbered list
 - 7-point response scale (Strongly Disagree to Strongly Agree)
 - Each item should clearly tap into the target dimension
-- Items should be distinct from each other
+- Items MUST be conceptually distinct from each other — each item should tap \
+into a different behavioral facet or experiential aspect of the dimension
 - Avoid reverse-scored / negatively-worded items
 - Keep items under 20 words each
+
+{previously_approved_items}
 
 For each item, include a brief rationale explaining why it measures the \
 target dimension.
@@ -125,6 +128,8 @@ into the target dimension
 - Maintain consistency with the target construct and dimension
 - Address all specific feedback points
 - Follow the item writing guidelines strictly
+
+{previously_approved_items}
 
 Respond with the complete revised set of numbered items, including both \
 unchanged and revised items. For revised items, briefly explain what was \
@@ -160,20 +165,6 @@ Items meeting BOTH thresholds have strong content validity.
 You are designed to represent naive judges (typical employees), not trained \
 psychometricians. Rate items based on how clearly they match each construct \
 definition from an everyday perspective.
-"""
-
-CONTENT_REVIEWER_SYSTEM_WITH_TOOL = CONTENT_REVIEWER_SYSTEM + """
-
-**Calculator Tool:**
-You have access to a **calculate** tool for performing arithmetic.
-ALWAYS use the calculate tool for computing c-values, d-values, means, \
-and threshold comparisons. Do NOT compute these in your head — use the tool \
-for every calculation.
-
-Examples:
-- c-value for target rating 5: calculate("5/6")
-- d-value for target=6, orb1=2, orb2=3: calculate("((6-2)+(6-3))/2/6")
-- Check threshold: calculate("5/6") then compare the result to 0.83
 """
 
 CONTENT_REVIEWER_TASK = """\
@@ -304,6 +295,17 @@ Evaluate the following items for potential demographic bias.
 {items_text}
 
 **Target Construct:** {construct_name}
+**Target Population:** {target_population}
+
+**IMPORTANT — Domain-Appropriate Language:**
+Items are written for a specific construct and target population. References to \
+the construct's domain (e.g., "work", "job", "employment" for a workplace construct) \
+are NOT bias — they are expected and appropriate. Only flag language that would \
+disadvantage specific demographic groups WITHIN the target population.
+
+For example, if the construct is about workplace attitudes and the target population \
+is working adults, references to "work tasks" or "job performance" are appropriate, \
+not biased.
 
 **Instructions:**
 1. Rate each item on a 1-5 bias scale:
@@ -312,12 +314,12 @@ Evaluate the following items for potential demographic bias.
 
 2. Present your ratings as a list, with each item's score and a brief rationale.
 
-3. For items rated 4 or below, provide:
+3. For items rated 3 or below, provide:
    - An explanation identifying the source of bias
    - Specific suggestions for improvement
 
 4. Provide an overall assessment of the item set's suitability for diverse \
-populations.
+populations within the target group.
 """
 
 
@@ -355,12 +357,43 @@ Likert-type scale items.
 **Bias Review:**
 {bias_review}
 
+**Decision Rules — Apply these strictly:**
+
+1. **Content validity is the primary criterion.** If an item meets both \
+c-value >= 0.83 AND d-value >= 0.35, content validity is PASSED.
+
+2. **Bias scoring thresholds:**
+   - Bias score 5/5: No issue → KEEP (from bias perspective)
+   - Bias score 4/5: Minor concern → KEEP (acceptable for pilot testing)
+   - Bias score 3/5: Moderate concern → REVISE only if a concrete fix exists
+   - Bias score 2 or below: Serious issue → REVISE or DISCARD
+
+3. **Linguistic scoring thresholds:**
+   - All criteria 5/5: No issue → KEEP
+   - Any criterion 4/5: Minor → KEEP (acceptable)
+   - Any criterion 3 or below: REVISE with specific suggestion
+
+4. **An item should be marked KEEP if:**
+   - Content validity passes (c >= 0.83, d >= 0.35) AND
+   - Bias score >= 4 AND
+   - No linguistic criterion below 4
+
+5. **Do NOT recommend REVISE for minor stylistic preferences.** Items that \
+meet the thresholds above are ready for pilot testing. Empirical data (factor \
+analysis, reliability) will identify any remaining issues.
+
+6. **Inter-item similarity check:** Assess whether any items in the current \
+set are too similar to each other in content, phrasing, or construct coverage. \
+If two or more items tap into the same narrow behavioral facet, flag the \
+weaker one(s) for REVISE or DISCARD to ensure the scale covers diverse \
+aspects of the dimension.
+
 **Instructions:**
 For each item:
 1. Summarize the key feedback across all three reviews
-2. Provide your recommendation: **KEEP**, **REVISE**, or **DISCARD**
+2. Apply the decision rules above to provide your recommendation: **KEEP**, **REVISE**, or **DISCARD**
 3. If REVISE, provide:
-   - The specific issues from each review domain
+   - The specific issues from each review domain that triggered REVISE
    - Your revised item stem
 
 Then provide an **Overall Review Synthesis** covering:

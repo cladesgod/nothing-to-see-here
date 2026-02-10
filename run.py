@@ -18,6 +18,8 @@ from langgraph.types import Command
 from src.config import get_agent_settings, get_settings
 from src.graphs.main_workflow import build_main_workflow
 from src.logging_config import setup_logging
+from src.persistence.db import get_connection
+from src.persistence.repository import create_run, finish_run
 from src.schemas.constructs import AAAW_CONSTRUCT
 from src.utils.console import (
     console,
@@ -65,6 +67,20 @@ async def run() -> None:
     graph = build_main_workflow(lewmod=args.lewmod)
     config = {"configurable": {"thread_id": str(uuid.uuid4())}}
 
+    # Initialize persistence
+    conn = get_connection()
+    run_id = str(uuid.uuid4())
+    agent_settings = get_agent_settings()
+    create_run(
+        conn,
+        run_id=run_id,
+        construct_name=AAAW_CONSTRUCT.name,
+        construct_definition=AAAW_CONSTRUCT.definition,
+        mode="lewmod" if args.lewmod else "human",
+        model=agent_settings.defaults.model,
+        max_revisions=999 if args.lewmod else args.max_revisions,
+    )
+
     # Initial state
     initial_state = {
         "construct_name": AAAW_CONSTRUCT.name,
@@ -72,6 +88,9 @@ async def run() -> None:
         "current_phase": "web_research",
         "revision_count": 0,
         "max_revisions": 999 if args.lewmod else args.max_revisions,
+        "run_id": run_id,
+        "db_path": str(conn.execute("PRAGMA database_list").fetchone()[2]),
+        "previously_approved_items": [],
         "messages": [],
     }
 
@@ -94,10 +113,16 @@ async def run() -> None:
         human_input = console.input("[bold bright_white]> Your feedback: [/bold bright_white]").strip()
 
         # Resume the graph with human feedback
-        async for _event in graph.astream(
-            Command(resume=human_input), config, stream_mode="updates"
-        ):
-            pass  # Agent console output is handled within each agent node
+        try:
+            async for _event in graph.astream(
+                Command(resume=human_input), config, stream_mode="updates"
+            ):
+                pass  # Agent console output is handled within each agent node
+        except GraphInterrupt:
+            pass  # Expected: another interrupt for the next feedback round
+        except Exception as e:
+            console.print(f"\n[bold red]Error during revision:[/bold red] {e}")
+            console.print("[yellow]The graph state has been preserved. You can try providing feedback again.[/yellow]")
 
         state = graph.get_state(config)
 
@@ -112,6 +137,10 @@ async def run() -> None:
     final_output += f"\n\n---\n\nRevision rounds: {final_state.get('revision_count', 0)}"
 
     print_final_results(final_output)
+
+    # Finalize persistence
+    finish_run(conn, run_id, status="done", total_revisions=final_state.get("revision_count", 0))
+    conn.close()
 
 
 def main() -> None:

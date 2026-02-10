@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import create_llm
 from src.prompts.templates import LINGUISTIC_REVIEWER_SYSTEM, LINGUISTIC_REVIEWER_TASK
 from src.schemas.state import ReviewChainState
-from src.utils.console import print_agent_message
+from src.utils.console import print_agent_message, validate_llm_response
 
 logger = structlog.get_logger(__name__)
 
@@ -36,7 +36,7 @@ async def linguistic_reviewer_node(state: ReviewChainState) -> dict:
     ]
 
     response = await llm.ainvoke(messages)
-    review_text = response.content
+    review_text = validate_llm_response(response.content, "LinguisticReviewer")
 
     logger.info("linguistic_reviewer_done")
 

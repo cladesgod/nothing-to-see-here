@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
-from langchain_core.runnables import RunnableWithFallbacks
+import pytest
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableSequence, RunnableWithFallbacks
 from langchain_openai import ChatOpenAI
 
 from src.config import AgentSettings
-from src.models import create_llm
+from src.models import _make_length_validator, create_llm
 
 
 def _make_settings(**overrides):
@@ -18,31 +20,102 @@ def _make_settings(**overrides):
     defaults = {
         "openrouter_api_key": "test-key",
         "tavily_api_key": "test-key",
-        "hf_token": "test-hf-token",
         "groq_api_key": "test-groq-key",
     }
     defaults.update(overrides)
     return Settings(**defaults)
 
 
-class TestCreateLlmFallbacks:
-    """Test create_llm() fallback chain behavior."""
+# ---------------------------------------------------------------------------
+# Response Length Validator
+# ---------------------------------------------------------------------------
 
-    def test_no_fallbacks_when_providers_disabled(self):
-        """When providers are disabled, create_llm returns plain ChatOpenAI."""
-        agent_settings = AgentSettings()  # defaults: providers disabled
+
+class TestLengthValidator:
+    """Test the _make_length_validator pipe function."""
+
+    def test_passes_long_response(self):
+        validator = _make_length_validator(50)
+        response = AIMessage(content="A" * 100)
+        result = validator.invoke(response)
+        assert result.content == "A" * 100
+
+    def test_raises_on_short_response(self):
+        validator = _make_length_validator(50)
+        response = AIMessage(content="Too short")
+        with pytest.raises(ValueError, match="too short"):
+            validator.invoke(response)
+
+    def test_raises_on_empty_response(self):
+        validator = _make_length_validator(50)
+        response = AIMessage(content="")
+        with pytest.raises(ValueError, match="too short"):
+            validator.invoke(response)
+
+    def test_raises_on_whitespace_only(self):
+        validator = _make_length_validator(50)
+        response = AIMessage(content="   \n\t  ")
+        with pytest.raises(ValueError, match="too short"):
+            validator.invoke(response)
+
+    def test_exact_threshold_passes(self):
+        validator = _make_length_validator(10)
+        response = AIMessage(content="A" * 10)
+        result = validator.invoke(response)
+        assert result.content == "A" * 10
+
+    def test_one_below_threshold_raises(self):
+        validator = _make_length_validator(10)
+        response = AIMessage(content="A" * 9)
+        with pytest.raises(ValueError, match="too short"):
+            validator.invoke(response)
+
+    def test_zero_threshold_passes_anything(self):
+        validator = _make_length_validator(0)
+        response = AIMessage(content="")
+        result = validator.invoke(response)
+        assert result.content == ""
+
+
+# ---------------------------------------------------------------------------
+# Basic create_llm
+# ---------------------------------------------------------------------------
+
+
+class TestCreateLlmBasic:
+    """Test basic create_llm behavior."""
+
+    def test_returns_piped_chain_when_no_fallbacks(self):
+        agent_settings = AgentSettings()  # providers disabled by default
         settings = _make_settings()
         with patch("src.models.get_agent_settings", return_value=agent_settings):
             llm = create_llm("item_writer", settings=settings)
-        assert isinstance(llm, ChatOpenAI)
-        assert not isinstance(llm, RunnableWithFallbacks)
+        # Now returns RunnableSequence (LLM | validator), not plain ChatOpenAI
+        assert isinstance(llm, RunnableSequence)
+        assert isinstance(llm.first, ChatOpenAI)
+
+    def test_primary_has_timeout(self):
+        agent_settings = AgentSettings.model_validate({
+            "defaults": {"timeout": 60}
+        })
+        settings = _make_settings()
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        primary = llm.first if isinstance(llm, RunnableSequence) else llm
+        assert primary.request_timeout == 60
+
+
+# ---------------------------------------------------------------------------
+# Fallback Chain
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackChain:
+    """Test fallback provider chain construction."""
 
     def test_groq_fallback_when_enabled(self):
-        """When Groq is enabled, create_llm returns RunnableWithFallbacks."""
         agent_settings = AgentSettings.model_validate({
-            "providers": {
-                "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
-            }
+            "providers": {"groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"}}
         })
         settings = _make_settings(groq_api_key="test-groq-key")
         with patch("src.models.get_agent_settings", return_value=agent_settings):
@@ -50,59 +123,7 @@ class TestCreateLlmFallbacks:
         assert isinstance(llm, RunnableWithFallbacks)
         assert len(llm.fallbacks) == 1
 
-    def test_hf_fallback_when_enabled(self):
-        """When HuggingFace is enabled, create_llm includes HF in fallbacks."""
-        agent_settings = AgentSettings.model_validate({
-            "providers": {
-                "huggingface": {
-                    "enabled": True,
-                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
-                    "base_url": "https://router.huggingface.co/v1",
-                },
-            }
-        })
-        settings = _make_settings(hf_token="test-hf-token")
-        with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("item_writer", settings=settings)
-        assert isinstance(llm, RunnableWithFallbacks)
-        assert len(llm.fallbacks) == 1
-
-    def test_hf_skipped_without_token(self):
-        """HF enabled but no token → skip HF fallback."""
-        agent_settings = AgentSettings.model_validate({
-            "providers": {
-                "huggingface": {
-                    "enabled": True,
-                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
-                },
-            }
-        })
-        settings = _make_settings(hf_token="")
-        with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("item_writer", settings=settings)
-        assert isinstance(llm, ChatOpenAI)  # No fallbacks
-
-    def test_full_chain_hf_groq_and_ollama(self):
-        """When all three providers enabled, create_llm has 3 fallbacks."""
-        agent_settings = AgentSettings.model_validate({
-            "providers": {
-                "huggingface": {
-                    "enabled": True,
-                    "default_model": "meta-llama/Llama-3.3-70B-Instruct",
-                    "base_url": "https://router.huggingface.co/v1",
-                },
-                "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
-                "ollama": {"enabled": True, "default_model": "llama3.2:latest"},
-            }
-        })
-        settings = _make_settings(hf_token="test-hf-token", groq_api_key="test-groq-key")
-        with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("item_writer", settings=settings)
-        assert isinstance(llm, RunnableWithFallbacks)
-        assert len(llm.fallbacks) == 3
-
     def test_full_chain_groq_and_ollama(self):
-        """When both Groq and Ollama enabled, create_llm has 2 fallbacks."""
         agent_settings = AgentSettings.model_validate({
             "providers": {
                 "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
@@ -116,25 +137,21 @@ class TestCreateLlmFallbacks:
         assert len(llm.fallbacks) == 2
 
     def test_groq_skipped_without_api_key(self):
-        """Groq enabled but no API key → skip Groq, only Ollama fallback."""
         agent_settings = AgentSettings.model_validate({
             "providers": {
                 "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
                 "ollama": {"enabled": True, "default_model": "llama3.2:latest"},
             }
         })
-        settings = _make_settings(groq_api_key="")  # No Groq key
+        settings = _make_settings(groq_api_key="")
         with patch("src.models.get_agent_settings", return_value=agent_settings):
             llm = create_llm("item_writer", settings=settings)
         assert isinstance(llm, RunnableWithFallbacks)
         assert len(llm.fallbacks) == 1  # Only Ollama
 
     def test_ollama_only_fallback(self):
-        """Only Ollama enabled, no Groq."""
         agent_settings = AgentSettings.model_validate({
-            "providers": {
-                "ollama": {"enabled": True, "default_model": "llama3.2:latest"},
-            }
+            "providers": {"ollama": {"enabled": True, "default_model": "llama3.2:latest"}}
         })
         settings = _make_settings()
         with patch("src.models.get_agent_settings", return_value=agent_settings):
@@ -142,57 +159,68 @@ class TestCreateLlmFallbacks:
         assert isinstance(llm, RunnableWithFallbacks)
         assert len(llm.fallbacks) == 1
 
-
-class TestCreateLlmWithTools:
-    """Test create_llm() tool binding behavior."""
-
-    def test_no_tools_returns_plain_model(self):
-        """Without tools, create_llm returns standard model (no bind_tools)."""
-        agent_settings = AgentSettings()  # providers disabled
-        settings = _make_settings()
-        with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("content_reviewer", settings=settings)
-        assert isinstance(llm, ChatOpenAI)
-        # ChatOpenAI without bind_tools has no 'tools' in kwargs
-        assert not getattr(llm, "kwargs", {}).get("tools")
-
-    def test_tools_bind_to_primary(self):
-        """When tools are passed, primary LLM should have tools bound."""
-        from langchain_core.tools import tool
-
-        @tool
-        def dummy_tool(x: str) -> str:
-            """A dummy tool."""
-            return x
-
-        agent_settings = AgentSettings()  # providers disabled
-        settings = _make_settings()
-        with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("content_reviewer", tools=[dummy_tool], settings=settings)
-        # bind_tools returns a RunnableBinding, not plain ChatOpenAI
-        assert hasattr(llm, "bound")  # RunnableBinding wraps the model
-
-    def test_tools_with_fallbacks(self):
-        """When tools + fallbacks, all providers should have tools bound."""
-        from langchain_core.tools import tool
-
-        @tool
-        def dummy_tool(x: str) -> str:
-            """A dummy tool."""
-            return x
-
+    def test_fallbacks_are_piped_chains(self):
+        """Each fallback should be a RunnableSequence (LLM | validator)."""
         agent_settings = AgentSettings.model_validate({
             "providers": {
+                "groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"},
                 "ollama": {"enabled": True, "default_model": "llama3.2:latest"},
             }
         })
+        settings = _make_settings(groq_api_key="test-groq-key")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        for fb in llm.fallbacks:
+            assert isinstance(fb, RunnableSequence)
+
+
+# ---------------------------------------------------------------------------
+# Max Tokens Propagation
+# ---------------------------------------------------------------------------
+
+
+class TestMaxTokensPropagation:
+    """FIX 2: max_tokens should propagate to all fallback providers."""
+
+    def test_primary_gets_max_tokens(self):
+        agent_settings = AgentSettings()
         settings = _make_settings()
         with patch("src.models.get_agent_settings", return_value=agent_settings):
-            llm = create_llm("content_reviewer", tools=[dummy_tool], settings=settings)
-        # Should be RunnableWithFallbacks with bound primary
+            llm = create_llm("item_writer", max_tokens=2048, settings=settings)
+        primary = llm.first if isinstance(llm, RunnableSequence) else llm
+        assert primary.max_tokens == 2048
+
+    def test_groq_gets_max_tokens(self):
+        agent_settings = AgentSettings.model_validate({
+            "providers": {"groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"}}
+        })
+        settings = _make_settings(groq_api_key="test-groq-key")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", max_tokens=2048, settings=settings)
         assert isinstance(llm, RunnableWithFallbacks)
-        # Primary (runnable) should have tools bound (RunnableBinding has 'bound')
-        assert hasattr(llm.runnable, "bound")
-        # Fallback should also have tools bound
-        assert len(llm.fallbacks) == 1
-        assert hasattr(llm.fallbacks[0], "bound")
+        groq_chain = llm.fallbacks[0]
+        groq_llm = groq_chain.first if isinstance(groq_chain, RunnableSequence) else groq_chain
+        assert groq_llm.max_tokens == 2048
+
+    def test_ollama_gets_num_predict(self):
+        agent_settings = AgentSettings.model_validate({
+            "providers": {"ollama": {"enabled": True, "default_model": "llama3.2:latest"}}
+        })
+        settings = _make_settings()
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", max_tokens=2048, settings=settings)
+        assert isinstance(llm, RunnableWithFallbacks)
+        ollama_chain = llm.fallbacks[0]
+        ollama_llm = ollama_chain.first if isinstance(ollama_chain, RunnableSequence) else ollama_chain
+        assert ollama_llm.num_predict == 2048
+
+    def test_no_max_tokens_when_not_specified(self):
+        agent_settings = AgentSettings.model_validate({
+            "providers": {"groq": {"enabled": True, "default_model": "llama-3.3-70b-versatile"}}
+        })
+        settings = _make_settings(groq_api_key="test-groq-key")
+        with patch("src.models.get_agent_settings", return_value=agent_settings):
+            llm = create_llm("item_writer", settings=settings)
+        assert isinstance(llm, RunnableWithFallbacks)
+        primary = llm.runnable.first if isinstance(llm.runnable, RunnableSequence) else llm.runnable
+        assert primary.max_tokens is None

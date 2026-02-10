@@ -66,5 +66,12 @@ class MainState(TypedDict, total=False):
     revision_count: int
     max_revisions: int  # default 3 (from paper)
 
+    # ----- Persistence -----
+    run_id: str      # Current run UUID (for DB tracking)
+    db_path: str     # SQLite DB path (serializable, not a connection)
+
+    # ----- Item diversity (avoids cross-round/cross-run homogeneity) -----
+    previously_approved_items: Annotated[list[str], operator.add]
+
     # ----- Messages (for debugging / logging — these DO accumulate) -----
     messages: Annotated[list[str], operator.add]

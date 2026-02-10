@@ -26,7 +26,7 @@ Built with **LangGraph** for orchestration, **Llama models** via **OpenRouter**,
 | **Critic** | Central orchestrator (deterministic routing) | - |
 | **WebSurfer** | Researches construct via Tavily web search | 0.0 |
 | **Item Writer** | Generates/revises Likert-scale items | 1.0 |
-| **Content Reviewer** | Evaluates content validity (c-value, d-value) + calculator tool | 0.0 |
+| **Content Reviewer** | Evaluates content validity (c-value, d-value) | 0.0 |
 | **Linguistic Reviewer** | Grammar, readability, ambiguity check | 0.0 |
 | **Bias Reviewer** | Gender, cultural, socioeconomic fairness | 0.0 |
 | **Meta Editor** | Synthesizes reviews → keep/revise/discard | 0.3 |
@@ -98,7 +98,6 @@ num_items = 8
 
 [agents.content_reviewer]
 temperature = 0.0
-calculator = true   # Enable calculator tool for precise c-value/d-value
 
 # See agents.toml for full config
 ```
@@ -123,17 +122,12 @@ backoff_factor = 2.0    # Exponential backoff multiplier
 If the primary provider (OpenRouter) fails, the LLM call cascades to fallback providers:
 
 ```
-OpenRouter (primary) → HuggingFace (fallback 1) → Groq (fallback 2) → Ollama (fallback 3, local)
+OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2, local)
 ```
 
 Configured in `agents.toml`:
 
 ```toml
-[providers.huggingface]
-enabled = true
-default_model = "meta-llama/Llama-3.3-70B-Instruct"
-base_url = "https://router.huggingface.co/v1"
-
 [providers.groq]
 enabled = true
 default_model = "llama-3.3-70b-versatile"
@@ -148,12 +142,11 @@ Each agent can override the fallback model:
 
 ```toml
 [agents.websurfer]
-hf_model = "meta-llama/Llama-3.3-70B-Instruct"
 groq_model = "llama-3.3-70b-versatile"
 ollama_model = "gpt-oss:20b"
 ```
 
-Requires `HF_TOKEN` and/or `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally). HuggingFace uses OpenAI-compatible API — no extra dependency needed.
+Requires `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally).
 
 ## Project Structure
 
@@ -161,14 +154,13 @@ Requires `HF_TOKEN` and/or `GROQ_API_KEY` in `.env` (Ollama needs no key — run
 agents.toml             # Agent config (models, temperatures, parameters)
 src/
   config.py             # pydantic-settings (.env) + AgentSettings (agents.toml)
-  models.py             # LLM factory with fallback chain (OpenRouter → HuggingFace → Groq → Ollama)
+  models.py             # LLM factory with fallback chain (OpenRouter → Groq → Ollama)
   schemas/              # TypedDict states + construct definitions
   agents/               # 7 agent implementations
   graphs/               # LangGraph workflow + review subgraph
   prompts/              # Prompt templates (from paper Table 2)
-  tools/                # Calculator tool for precise c-value/d-value arithmetic
   utils/                # Console output (rich)
-tests/                  # 97 tests (schemas, agents, config, models, tools, graph structure)
+tests/                  # 61 tests (schemas, agents, config, models, graph structure)
 notebooks/demo.ipynb    # End-to-end demo
 run.py                  # CLI entry point
 langgraph.json          # LangGraph Studio configuration

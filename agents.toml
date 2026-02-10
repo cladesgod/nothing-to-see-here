@@ -7,6 +7,8 @@
 
 [defaults]
 model = "meta-llama/llama-4-maverick"
+timeout = 120                # Request timeout per provider (seconds). On timeout → fallback.
+min_response_length = 50     # Minimum chars from LLM. Below this → try next provider.
 
 # ---- Retry Policy (LangGraph node-level retry) ----
 
@@ -16,13 +18,8 @@ initial_interval = 1.0     # Seconds before first retry
 backoff_factor = 2.0       # Exponential backoff multiplier
 
 # ---- Fallback Providers ----
-# Chain: OpenRouter (primary) → HuggingFace (fallback 1) → Groq (fallback 2) → Ollama (fallback 3)
+# Chain: OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2)
 # Set enabled = false to skip a provider.
-
-[providers.huggingface]
-enabled = true
-default_model = "meta-llama/Llama-3.3-70B-Instruct"
-base_url = "https://router.huggingface.co/v1"
 
 [providers.groq]
 enabled = true
@@ -34,7 +31,7 @@ default_model = "gpt-oss:20b"
 base_url = "http://localhost:11434"
 
 # ---- Agent Configurations ----
-# hf_model / groq_model / ollama_model: agent-specific fallback model overrides
+# groq_model / ollama_model: agent-specific fallback model overrides
 # If omitted, uses [providers.X].default_model
 
 [agents.websurfer]
@@ -42,6 +39,8 @@ model = "meta-llama/llama-4-scout"
 temperature = 0.0          # Factual accuracy (paper)
 max_results = 5            # Tavily search results to retrieve
 search_depth = "advanced"  # Tavily search depth: "basic" or "advanced"
+cache_enabled = true       # Cache search results per construct (avoid redundant API calls)
+cache_ttl_hours = 24       # Hours before cached results expire
 groq_model = "llama-3.3-70b-versatile"
 ollama_model = "gpt-oss:20b"
 
@@ -55,7 +54,6 @@ ollama_model = "gpt-oss:20b"
 [agents.content_reviewer]
 model = "meta-llama/llama-4-maverick"
 temperature = 0.0          # Deterministic evaluation
-calculator = true           # Enable calculator tool for c-value/d-value computation
 groq_model = "llama-3.3-70b-versatile"
 ollama_model = "gpt-oss:20b"
 
@@ -85,3 +83,19 @@ ollama_model = "gpt-oss:20b"
 
 [workflow]
 max_revisions = 3          # Default revision rounds (CLI --max-revisions overrides)
+memory_enabled = true      # Use previous run items to push for diversity (anti-homogeneity)
+memory_limit = 5           # How many prior runs' items to include in prompts
+
+# ---- Evaluation Pipeline (LLM-as-a-Judge) ----
+# Independent quality assessment of generated items.
+# Runs AFTER the generation pipeline, not during it.
+
+[eval]
+enabled = true
+judge_model = "meta-llama/llama-4-maverick"   # Model for the judge LLM
+judge_temperature = 0.0                        # Deterministic evaluation
+content_validity_threshold = 0.83              # Colquitt c-value threshold
+distinctiveness_threshold = 0.35               # Colquitt d-value threshold
+linguistic_threshold = 0.8                     # Linguistic quality pass threshold
+bias_threshold = 0.9                           # Bias freedom pass threshold
+dataset_name = "lm-aig-eval"                   # LangSmith dataset name

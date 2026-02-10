@@ -12,3 +12,11 @@ build/
 .langgraph_api/
 .ruff_cache/
 .mypy_cache/
+.cache/
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# Personal / private notes
+mail.md
+expectations.md

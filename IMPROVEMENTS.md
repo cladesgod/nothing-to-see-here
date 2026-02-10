@@ -112,17 +112,19 @@ Paper'dan farkli olarak bilincli tercih yaptigimiz noktalar.
 - **Sorun:** Tum `llm.ainvoke()` cagrilari korumasiz — OpenRouter rate limit, network hatasi veya gecici ariza durumunda workflow coker.
 - **Cozum:** Iki katmanli guvenilirlik:
   - **Katman 1 — LangGraph RetryPolicy:** Node seviyesinde otomatik retry. Exponential backoff ile 3 deneme. `agents.toml` `[retry]` bolumunden konfigure edilir.
-  - **Katman 2 — Fallback Provider Zinciri:** `create_llm()` icinde `with_fallbacks()` ile OpenRouter → Groq → Ollama zinciri. Her provider'in modeli agent bazinda `agents.toml`'dan konfigure edilir.
+  - **Katman 2 — Fallback Provider Zinciri:** `create_llm()` icinde `with_fallbacks()` ile OpenRouter → Groq → Ollama zinciri. Her provider'in modeli agent bazinda `agents.toml`'dan konfigure edilir. Per-agent override: `groq_model` / `ollama_model`.
   - Iki katman birlikte calisir: her retry denemesinde tam fallback zinciri tekrar calisir.
 - **Sonuc:** 61 test (onceki 40). Sifir downtime riski — 3 bagimsiz provider zinciri ile yuksek erisilebilirlik.
 - **Dosyalar:** `pyproject.toml`, `agents.toml`, `src/config.py`, `src/models.py`, `src/graphs/main_workflow.py`, `src/graphs/review_chain.py`, `src/utils/console.py`, `tests/test_config.py`, `tests/test_models.py` (yeni), `tests/test_workflow.py`
 
-### 12. Calculator Tool — Kesin Aritmetik icin Content Reviewer Araci
+### 12. SQLite Persistence + Anti-Homogeneity Guard
 
-- **Sorun:** Content Reviewer, c-value ve d-value hesaplamalarini LLM'in kendi kafasindan yapiyor. LLM'ler aritmetikte hata yapabilir (bolme, ortalama, esik karsilastirma).
-- **Cozum:** LangChain `@tool` ile bir `calculate` tool tanimlandi. Content Reviewer'a `bind_tools()` ile baglandi. LLM formul hesaplamasi gerektiginde tool'u cagirir, Python `eval()` ile kesin sonuc alir.
-  - **Guvenlik:** `eval()` sadece rakamlar ve aritmetik operatorler (`0-9`, `.`, `+`, `-`, `*`, `/`, `(`, `)`) kabul eder. Harf, import, __builtins__ reddedilir.
-  - **Konfigürasyon:** `agents.toml`'da `[agents.content_reviewer]` altinda `calculator = true/false` toggle'i. Default kapali — mevcut davranis degismez.
-  - **Tool binding sirasi:** `bind_tools()` her provider'a ayri ayri uygulanir, **sonra** `with_fallbacks()` yapilir. (`RunnableWithFallbacks` uzerinde `bind_tools()` cagrilamaz.)
-- **Sonuc:** 82 test (onceki 61). c-value/d-value hesaplamalarinda sifir aritmetik hata riski.
-- **Dosyalar:** `agents.toml`, `src/config.py`, `src/models.py`, `src/agents/content_reviewer.py`, `src/prompts/templates.py`, `src/tools/calculator.py` (yeni), `tests/test_tools.py` (yeni), `tests/test_config.py`, `tests/test_models.py`, `tests/test_agents.py`
+- **Sorun:** Pipeline her calistirmada sifirdan basliyor — onceki run'lardaki maddeler, review'lar, feedback kaybolur. Ayrica Lee et al. (2025) AI-uretilen maddelerin birbirine cok benzer oldugunu buldu (3/24 item dusuk content validity).
+- **Cozum:**
+  - SQLite persistence layer (`src/persistence/`). 6 tablo: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`, `eval_results`. Zero dependency (`sqlite3` stdlib).
+  - `get_previous_items()` ile Item Writer, onceki run'larin final maddelerini DB'den okuyarak prompt'a enjekte eder.
+  - Meta Editor'e Rule 6 (inter-item similarity check) eklendi.
+  - `agents.toml`'dan kontrol edilebilir: `memory_enabled = true/false`, `memory_limit = 5` (kac onceki run dahil edilsin).
+- **Sonuc:** 133 test (onceki 103). Cross-run ve cross-round item diversity sistematik olarak zorlanir. Tum pipeline state'i kalici olarak saklanir.
+- **Dosyalar:** `src/persistence/db.py`, `src/persistence/repository.py`, `src/agents/item_writer.py`, `src/agents/web_surfer.py`, `src/agents/lewmod.py`, `src/graphs/main_workflow.py`, `src/prompts/templates.py`, `src/schemas/state.py`, `src/config.py`, `agents.toml`, `run.py`, `tests/test_persistence.py` (yeni), `tests/test_config.py`
+

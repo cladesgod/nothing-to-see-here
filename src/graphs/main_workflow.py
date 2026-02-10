@@ -20,6 +20,8 @@ All agent communication uses natural language text (paper-like style).
 
 from __future__ import annotations
 
+import sqlite3
+
 import structlog
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END, START
@@ -32,6 +34,7 @@ from src.agents.item_writer import item_writer_node
 from src.agents.lewmod import lewmod_node
 from src.agents.web_surfer import web_surfer_node
 from src.graphs.review_chain import review_chain_graph
+from src.persistence.repository import get_latest_round_id, save_feedback, save_review
 from src.schemas.constructs import AAAW_CONSTRUCT
 from src.schemas.state import MainState, ReviewChainState
 from src.utils.console import print_agent_message, print_human_prompt
@@ -73,9 +76,37 @@ async def review_chain_wrapper(state: MainState) -> dict:
     }
 
     result = await review_chain_graph.ainvoke(sub_state)
-    review_text = result.get("meta_review", "No review available.")
+    review_text = result.get("meta_review", "")
+    if not review_text or not review_text.strip():
+        logger.warning("review_chain_empty_output")
+        review_text = (
+            "WARNING: The review chain did not produce a substantive review. "
+            "This may indicate a failure in one or more reviewer agents. "
+            "The items should be manually inspected before proceeding."
+        )
 
     logger.info("review_chain_done")
+
+    # Persist review results to DB
+    db_path = state.get("db_path")
+    run_id = state.get("run_id")
+    if db_path and run_id:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            round_id = get_latest_round_id(conn, run_id)
+            if round_id is not None:
+                save_review(
+                    conn,
+                    round_id,
+                    content_review=result.get("content_review", ""),
+                    linguistic_review=result.get("linguistic_review", ""),
+                    bias_review=result.get("bias_review", ""),
+                    meta_review=result.get("meta_review", ""),
+                )
+            conn.close()
+        except Exception:
+            logger.warning("review_chain_db_write_failed", exc_info=True)
 
     return {
         "review_text": review_text,
@@ -115,16 +146,32 @@ def human_feedback_node(state: MainState) -> dict:
     human_input = interrupt(summary)
 
     # Process the human response
-    if isinstance(human_input, str) and human_input.strip().lower() == "approve":
-        print_agent_message("Human", "Critic", "Approved all items.")
+    feedback = human_input if isinstance(human_input, str) else str(human_input)
+    is_approved = feedback.strip().lower() == "approve"
+    decision = "approve" if is_approved else "revise"
+
+    print_agent_message("Human", "Critic", "Approved all items." if is_approved else feedback)
+
+    # Persist feedback to DB
+    db_path = state.get("db_path")
+    run_id = state.get("run_id")
+    if db_path and run_id:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            round_id = get_latest_round_id(conn, run_id)
+            if round_id is not None:
+                save_feedback(conn, round_id, source="human", feedback_text=feedback, decision=decision)
+            conn.close()
+        except Exception:
+            logger.warning("human_feedback_db_write_failed", exc_info=True)
+
+    if is_approved:
         return {
             "human_feedback": "approved",
             "current_phase": "done",
             "messages": ["[Human] Approved all items"],
         }
-
-    feedback = human_input if isinstance(human_input, str) else str(human_input)
-    print_agent_message("Human", "Critic", feedback)
 
     return {
         "human_feedback": feedback,
