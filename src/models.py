@@ -14,7 +14,6 @@ provider via with_fallbacks().
 from __future__ import annotations
 
 import structlog
-from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_openai import ChatOpenAI
 

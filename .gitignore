@@ -17,6 +17,36 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 
+# LaTeX build artifacts
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Presentation build (keep .tex and .pdf)
+presentation/*.aux
+presentation/*.log
+presentation/*.nav
+presentation/*.out
+presentation/*.snm
+presentation/*.toc
+
+# Docs & presentation (not part of deliverable repo)
+docs/
+presentation/
+
+# All .md files except README.md
+CLAUDE.md
+COMPARISON.md
+FUTURE.md
+IMPROVEMENTS.md
+PAPER_VS_IMPLEMENTATION.md
+
 # Personal / private notes
 mail.md
 expectations.md

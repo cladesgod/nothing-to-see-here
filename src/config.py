@@ -79,6 +79,7 @@ class AgentsTable(BaseModel):
     bias_reviewer: BiasReviewerConfig = Field(default_factory=BiasReviewerConfig)
     meta_editor: MetaEditorConfig = Field(default_factory=MetaEditorConfig)
     lewmod: LewModConfig = Field(default_factory=LewModConfig)
+    injection_classifier: AgentConfig = Field(default_factory=AgentConfig)
 
 
 class DefaultsTable(BaseModel):
@@ -120,17 +121,28 @@ class ProvidersTable(BaseModel):
     ollama: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
-class EvalConfig(BaseModel):
-    """The [eval] table from agents.toml — evaluation pipeline settings."""
+class JsonFixConfig(BaseModel):
+    """Structured output fixing configuration."""
+
+    max_attempts: int = 8
+    memory_window: int = 4
+
+
+class APIConfig(BaseModel):
+    """API server configuration from [api] in agents.toml."""
+
+    max_workers: int = 10              # Global max concurrent pipeline runs
+    max_concurrent_per_user: int = 3   # Per-user concurrent run limit
+    rate_limit_rpm: int = 10           # Requests per minute per API key
+    rate_limit_daily: int = 100        # Requests per day per API key
+
+
+class PromptInjectionConfig(BaseModel):
+    """Two-layer prompt injection defense from [prompt_injection] in agents.toml."""
 
     enabled: bool = True
-    judge_model: str = ""  # Falls back to defaults.model if empty
-    judge_temperature: float = 0.0
-    content_validity_threshold: float = 0.83
-    distinctiveness_threshold: float = 0.35
-    linguistic_threshold: float = 0.8
-    bias_threshold: float = 0.9
-    dataset_name: str = "lm-aig-eval"
+    threshold: float = 0.7        # Confidence >= this triggers STOP
+    min_input_length: int = 10    # Skip check for inputs shorter than this
 
 
 class AgentSettings(BaseModel):
@@ -141,7 +153,9 @@ class AgentSettings(BaseModel):
     workflow: WorkflowTable = Field(default_factory=WorkflowTable)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     providers: ProvidersTable = Field(default_factory=ProvidersTable)
-    eval: EvalConfig = Field(default_factory=EvalConfig)
+    json_fix: JsonFixConfig = Field(default_factory=JsonFixConfig)
+    api: APIConfig = Field(default_factory=APIConfig)
+    prompt_injection: PromptInjectionConfig = Field(default_factory=PromptInjectionConfig)
 
     def get_agent_config(self, agent_name: str) -> AgentConfig:
         """Get the config for a specific agent."""
@@ -149,9 +163,6 @@ class AgentSettings(BaseModel):
 
     def get_model(self, agent_name: str) -> str:
         """Get the resolved model for an agent (agent-specific > defaults)."""
-        # Special case: eval judge uses eval.judge_model
-        if agent_name == "eval_judge" and self.eval.judge_model:
-            return self.eval.judge_model
         agent_cfg = self.get_agent_config(agent_name)
         return agent_cfg.model or self.defaults.model
 
@@ -218,12 +229,12 @@ class Settings(BaseSettings):
     # OpenRouter base URL
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # Database URL — SQLite (default) or PostgreSQL (production)
+    # Examples: "sqlite:///data/pipeline.db", "postgresql://user:pass@host/db"
+    database_url: str = ""
+
     # Logging
     log_level: str = "INFO"
-
-    # Rate limiting
-    rate_limit_rpm: int = 60  # requests per minute
-
 
 def get_settings() -> Settings:
     """Create and return a Settings instance.

@@ -81,21 +81,39 @@ temperature = 0.3          # Balanced expert evaluation
 groq_model = "llama-3.3-70b-versatile"
 ollama_model = "gpt-oss:20b"
 
+[agents.injection_classifier]
+model = "meta-llama/llama-4-scout"     # Fast/lightweight for classification
+temperature = 0.0                       # Deterministic verdicts
+groq_model = "llama-3.3-70b-versatile"
+ollama_model = "gpt-oss:20b"
+
 [workflow]
-max_revisions = 3          # Default revision rounds (CLI --max-revisions overrides)
+max_revisions = 5          # Default revision rounds (CLI --max-revisions overrides)
 memory_enabled = true      # Use previous run items to push for diversity (anti-homogeneity)
 memory_limit = 5           # How many prior runs' items to include in prompts
 
-# ---- Evaluation Pipeline (LLM-as-a-Judge) ----
-# Independent quality assessment of generated items.
-# Runs AFTER the generation pipeline, not during it.
+[json_fix]
+max_attempts = 8
+memory_window = 4
 
-[eval]
+# ---- API Server Configuration ----
+# Used by FastAPI server (src/api/app.py). Ignored by CLI.
+
+# ---- Prompt Injection Defense ----
+# Two-layer LLM-based defense for human feedback input.
+# Layer 1: Intent classification (jailbreak detection)
+# Layer 2: Domain boundary check (psychometric scope)
+
+[prompt_injection]
 enabled = true
-judge_model = "meta-llama/llama-4-maverick"   # Model for the judge LLM
-judge_temperature = 0.0                        # Deterministic evaluation
-content_validity_threshold = 0.83              # Colquitt c-value threshold
-distinctiveness_threshold = 0.35               # Colquitt d-value threshold
-linguistic_threshold = 0.8                     # Linguistic quality pass threshold
-bias_threshold = 0.9                           # Bias freedom pass threshold
-dataset_name = "lm-aig-eval"                   # LangSmith dataset name
+threshold = 0.7            # Confidence >= this triggers STOP (0.0-1.0)
+min_input_length = 10      # Skip check for inputs shorter than this (chars)
+
+# ---- API Server Configuration ----
+# Used by FastAPI server (src/api/app.py). Ignored by CLI.
+
+[api]
+max_workers = 10               # Global max concurrent pipeline runs
+max_concurrent_per_user = 3    # Per-user concurrent run limit
+rate_limit_rpm = 10            # Requests per minute per API key
+rate_limit_daily = 100         # Requests per day per API key

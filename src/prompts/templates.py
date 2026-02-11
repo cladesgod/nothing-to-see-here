@@ -111,25 +111,35 @@ target dimension.
 ITEM_WRITER_REVISE = """\
 Revise the following test items based on reviewer feedback and human feedback.
 
-**Original Items:**
+**Construct:** {construct_name}
+**Definition:** {construct_definition}
+
+**Active Items to Revise:**
 {items_text}
 
 **Reviewer Feedback:**
+Each item below has a deterministic quality verdict. Key fields:
+- `decision`: KEEP (no changes needed), REVISE (apply suggestions), \
+or DISCARD (replace entirely)
+- `c_value` / `d_value`: content validity metrics (>= 0.83 / >= 0.35 = good)
+- `bias_score`: demographic fairness (1-5, >= 4 = good)
+- `ling_min`: worst linguistic criterion score (1-5, >= 4 = good)
+- `reason`: brief explanation of the verdict
+
 {review_text}
 
 **Human Feedback:**
 {human_feedback}
 
 **Instructions:**
-- Items recommended to KEEP: do not modify
-- Items recommended to REVISE: apply the suggested changes
-- Items recommended to DISCARD: generate replacement items that better tap \
-into the target dimension
-- Maintain consistency with the target construct and dimension
+- Items with decision KEEP: do not modify
+- Items with decision REVISE: apply the suggested changes, paying attention \
+to the specific metrics that fell below threshold
+- Items with decision DISCARD: generate replacement items that better tap \
+into the target construct dimension
+- Ensure all items remain consistent with the construct definition above
 - Address all specific feedback points
 - Follow the item writing guidelines strictly
-
-{previously_approved_items}
 
 Respond with the complete revised set of numbered items, including both \
 unchanged and revised items. For revised items, briefly explain what was \
@@ -174,26 +184,48 @@ Evaluate the content validity of the following items.
 {items_text}
 
 **Construct and Dimension Information:**
+The list below contains multiple TARGET + ORBITING dimension blocks. Each block \
+has one TARGET construct (what the item should measure) and two ORBITING constructs \
+(related but distinct dimensions the item should NOT measure).
+
 {dimension_info}
 
 **Instructions:**
-1. For EACH item, rate on a 7-point scale (1-7) how well it matches:
-   - The TARGET construct (Construct 1)
-   - Orbiting Construct 2
-   - Orbiting Construct 3
+Return ONLY JSON. Do not return markdown or prose.
 
-2. Present your ratings in a markdown table with the following columns:
-   |Item|Construct 1|Construct 2|Construct 3|c-value|d-value|Meets Criterion|
+Scope and numbering rules:
+- Evaluate ONLY the items listed above.
+- Include EACH listed item exactly once in `items`.
+- Preserve original `item_number` values exactly (do not renumber, skip, or invent IDs).
+- Keep `feedback` concise (max 1 sentence).
+- Do not add extra keys beyond the schema.
 
-3. For items that do NOT meet the criterion (c-value < 0.83 or d-value < 0.35), \
-provide detailed feedback:
-   - What is the current assessment of the item?
-   - Why does it fail the threshold?
-   - Specific recommendation for refinement
+For EACH item, provide only raw ratings:
+   - Select the ONE dimension block whose TARGET best matches the item's content. \
+Each item targets one specific dimension — do NOT force all items into the same target.
+   - Rate how well the item measures that selected TARGET as `target_rating` (1-7). \
+High rating = item does a good job measuring this construct.
+   - Rate how well the item measures each of the two ORBITING constructs from that \
+same block as `orbiting_1_rating` and `orbiting_2_rating` (1-7). Low rating = good \
+(item is distinct from the orbiting construct).
+   - If an item does not fit any listed target well, still choose the closest
+     target and reflect mismatch with lower target/higher orbiting ratings.
 
-Compute c-value as: target rating / 6
-Compute d-value as: mean(target - orbiting1, target - orbiting2) / 6
-An item meets the criterion if c-value >= 0.83 AND d-value >= 0.35.
+JSON schema:
+{{
+  "items": [
+    {{
+      "item_number": 1,
+      "target_rating": 1-7,
+      "orbiting_1_rating": 1-7,
+      "orbiting_2_rating": 1-7,
+      "feedback": "optional short note"
+    }}
+  ],
+  "overall_summary": "short summary"
+}}
+
+Do NOT compute c-value/d-value/meets_criterion. These are computed by code.
 """
 
 
@@ -240,20 +272,29 @@ Evaluate the linguistic quality of the following items for the "{construct_name}
 {items_text}
 
 **Instructions:**
-1. Provide a general assessment of the overall linguistic quality of the item set.
+Return ONLY JSON. Do not return markdown or prose.
 
-2. Evaluate each criterion:
-   - Grammatical Accuracy and Stylistic Consistency
-   - Ease of Understanding
-   - Avoidance of Unnecessary Negative Language
-   - Clarity and Directness
+Scope and numbering rules:
+- Evaluate ONLY the items listed above.
+- Include EACH listed item exactly once in `items`.
+- Preserve original `item_number` values exactly (do not renumber, skip, or invent IDs).
+- Keep `feedback` concise (max 1 sentence).
+- Do not add extra keys beyond the schema.
 
-3. For items scoring 4 or below on any criterion, provide:
-   - The specific issue identified
-   - A suggested improvement
-
-Write your evaluation as a structured narrative with specific feedback for \
-problematic items.
+JSON schema:
+{{
+  "items": [
+    {{
+      "item_number": 1,
+      "grammatical_accuracy": 1-5,
+      "ease_of_understanding": 1-5,
+      "negative_language_free": 1-5,
+      "clarity_directness": 1-5,
+      "feedback": "optional short note"
+    }}
+  ],
+  "overall_summary": "short summary"
+}}
 """
 
 
@@ -308,18 +349,26 @@ is working adults, references to "work tasks" or "job performance" are appropria
 not biased.
 
 **Instructions:**
-1. Rate each item on a 1-5 bias scale:
-   - 1 = highly biased
-   - 5 = completely unbiased
+Return ONLY JSON. Do not return markdown or prose.
 
-2. Present your ratings as a list, with each item's score and a brief rationale.
+Scope and numbering rules:
+- Evaluate ONLY the items listed above.
+- Include EACH listed item exactly once in `items`.
+- Preserve original `item_number` values exactly (do not renumber, skip, or invent IDs).
+- Keep `feedback` concise (max 1 sentence).
+- Do not add extra keys beyond the schema.
 
-3. For items rated 3 or below, provide:
-   - An explanation identifying the source of bias
-   - Specific suggestions for improvement
-
-4. Provide an overall assessment of the item set's suitability for diverse \
-populations within the target group.
+JSON schema:
+{{
+  "items": [
+    {{
+      "item_number": 1,
+      "score": 1-5,
+      "feedback": "optional short note"
+    }}
+  ],
+  "overall_summary": "short summary"
+}}
 """
 
 
@@ -348,59 +397,39 @@ Likert-type scale items.
 **Items under review:**
 {items_text}
 
-**Content Review:**
+**Content Review** (per-item: target_rating 1-7, orbiting_1/2_rating 1-7; \
+high target + low orbiting = good content validity):
 {content_review}
 
-**Linguistic Review:**
+**Linguistic Review** (per-item: grammatical_accuracy, ease_of_understanding, \
+negative_language_free, clarity_directness; each 1-5, 5 = excellent):
 {linguistic_review}
 
-**Bias Review:**
+**Bias Review** (per-item: score 1-5; 5 = completely unbiased, 1 = highly biased):
 {bias_review}
 
-**Decision Rules — Apply these strictly:**
-
-1. **Content validity is the primary criterion.** If an item meets both \
-c-value >= 0.83 AND d-value >= 0.35, content validity is PASSED.
-
-2. **Bias scoring thresholds:**
-   - Bias score 5/5: No issue → KEEP (from bias perspective)
-   - Bias score 4/5: Minor concern → KEEP (acceptable for pilot testing)
-   - Bias score 3/5: Moderate concern → REVISE only if a concrete fix exists
-   - Bias score 2 or below: Serious issue → REVISE or DISCARD
-
-3. **Linguistic scoring thresholds:**
-   - All criteria 5/5: No issue → KEEP
-   - Any criterion 4/5: Minor → KEEP (acceptable)
-   - Any criterion 3 or below: REVISE with specific suggestion
-
-4. **An item should be marked KEEP if:**
-   - Content validity passes (c >= 0.83, d >= 0.35) AND
-   - Bias score >= 4 AND
-   - No linguistic criterion below 4
-
-5. **Do NOT recommend REVISE for minor stylistic preferences.** Items that \
-meet the thresholds above are ready for pilot testing. Empirical data (factor \
-analysis, reliability) will identify any remaining issues.
-
-6. **Inter-item similarity check:** Assess whether any items in the current \
-set are too similar to each other in content, phrasing, or construct coverage. \
-If two or more items tap into the same narrow behavioral facet, flag the \
-weaker one(s) for REVISE or DISCARD to ensure the scale covers diverse \
-aspects of the dimension.
-
 **Instructions:**
-For each item:
-1. Summarize the key feedback across all three reviews
-2. Apply the decision rules above to provide your recommendation: **KEEP**, **REVISE**, or **DISCARD**
-3. If REVISE, provide:
-   - The specific issues from each review domain that triggered REVISE
-   - Your revised item stem
+Return ONLY JSON (no markdown fences, no prose):
+{{
+  "items": [
+    {{
+      "item_number": 1,
+      "decision": "KEEP",
+      "reason": "short reason",
+      "revised_item_stem": null
+    }}
+  ],
+  "overall_synthesis": "short synthesis"
+}}
 
-Then provide an **Overall Review Synthesis** covering:
-- Clarity and Precision
-- Readability
-- Bias Considerations
-- Any remaining issues
+JSON rules:
+- Include every input item exactly once in `items`.
+- `decision` MUST be one of: KEEP, REVISE, DISCARD.
+- `item_number` MUST match the original item numbering.
+- If decision is KEEP or DISCARD, `revised_item_stem` must be null.
+- If decision is REVISE, `revised_item_stem` must contain the revised item stem text.
+- Keep `reason` concise (max 1 sentence).
+- Do not add extra keys beyond the schema.
 """
 
 
@@ -473,6 +502,12 @@ measurement quality: **REVISE** and provide detailed feedback
    - **Critical issues** (must fix): problems that would compromise validity
    - **Recommended changes** (should fix): improvements that would strengthen items
    - For each issue, reference the specific item number and suggest a concrete fix
+
+5. Active-item contract:
+   - The provided list already contains ACTIVE items only.
+   - Output decisions only for those listed item numbers.
+   - Do NOT reference frozen/unlisted item numbers.
+   - `keep`, `revise`, and `discard` must contain unique item numbers from the list only.
 
 **IMPORTANT — Approval guidance based on revision round:**
 - Round 0: First pass. REVISE if there are clear content validity or bias issues.

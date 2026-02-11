@@ -14,6 +14,7 @@ from typing import Literal
 
 import structlog
 
+from src.schemas.phases import Phase
 from src.schemas.state import MainState
 from src.utils.console import print_phase_transition
 
@@ -36,7 +37,7 @@ def critic_node(state: MainState) -> dict:
     This node makes the Critic visible in the graph visualization and
     provides a hook for future LLM-based critic logic.
     """
-    current_phase = state.get("current_phase", "web_research")
+    current_phase = state.get("current_phase", Phase.WEB_RESEARCH)
     revision_count = state.get("revision_count", 0)
     max_revisions = state.get("max_revisions", 3)
 
@@ -47,11 +48,11 @@ def critic_node(state: MainState) -> dict:
     )
 
     # If revision phase and max reached, transition to done
-    if current_phase == "revision" and revision_count >= max_revisions:
+    if current_phase == Phase.REVISION and revision_count >= max_revisions:
         logger.info("critic_max_revisions_reached", count=revision_count)
         print_phase_transition("done")
         return {
-            "current_phase": "done",
+            "current_phase": Phase.DONE,
             "messages": [f"[Critic] Max revisions ({max_revisions}) reached. Finalizing."],
         }
 
@@ -75,21 +76,21 @@ def critic_router(state: MainState) -> Route:
       revision        → item_writer
       done            → END
     """
-    current_phase = state.get("current_phase", "web_research")
+    current_phase = state.get("current_phase", Phase.WEB_RESEARCH)
 
-    if current_phase == "web_research":
+    if current_phase == Phase.WEB_RESEARCH:
         return "web_surfer"
 
-    if current_phase == "item_generation":
+    if current_phase == Phase.ITEM_GENERATION:
         return "item_writer"
 
-    if current_phase == "review":
+    if current_phase == Phase.REVIEW:
         return "review_chain"
 
-    if current_phase == "human_feedback":
+    if current_phase == Phase.HUMAN_FEEDBACK:
         return "human_feedback"
 
-    if current_phase == "revision":
+    if current_phase == Phase.REVISION:
         return "item_writer"
 
     # done or unknown

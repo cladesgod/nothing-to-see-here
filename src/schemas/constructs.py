@@ -1,7 +1,11 @@
-"""AAAW (Attitudes Toward the Use of AI in the Workplace) construct definitions.
+"""Psychological construct definitions and preset registry.
 
+Supports built-in presets (e.g. AAAW) and custom constructs loaded from JSON.
+The system is construct-agnostic: any construct with dimensions and orbiting
+dimensions can be used for item generation and content validity assessment.
+
+Built-in preset: AAAW (Attitudes Toward the Use of AI in the Workplace)
 Based on Park et al. (2024) as used in Lee et al. (2025).
-The AAAW scale measures six dimensions of attitudes toward AI in the workplace.
 
 Each dimension includes two orbiting dimensions for content validity assessment
 using the Colquitt et al. (2019) method: the content reviewer rates the item's
@@ -10,6 +14,10 @@ then c-value and d-value are computed from the difference.
 """
 
 from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -147,3 +155,101 @@ AAAW_CONSTRUCT = Construct(
     ),
     dimensions=AAAW_DIMENSIONS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Preset Registry
+# ---------------------------------------------------------------------------
+
+CONSTRUCT_PRESETS: dict[str, Construct] = {
+    "aaaw": AAAW_CONSTRUCT,
+}
+
+
+def get_preset(name: str) -> Construct | None:
+    """Get a built-in construct preset by name (case-insensitive)."""
+    return CONSTRUCT_PRESETS.get(name.lower())
+
+
+def list_presets() -> list[str]:
+    """Return list of available preset names."""
+    return list(CONSTRUCT_PRESETS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Dimension Info Builder
+# ---------------------------------------------------------------------------
+
+
+def build_dimension_info(construct: Construct) -> str:
+    """Build formatted dimension info text for the content reviewer.
+
+    Formats each dimension with its orbiting dimensions for content
+    validity assessment (Colquitt method). This text is passed through
+    state to the review chain.
+    """
+    dimension_lines = []
+    for dim in construct.dimensions:
+        orbiting = construct.get_orbiting_definitions(dim.name)
+        dim_text = (
+            f"**Construct 1 (TARGET): {dim.name}**\n- Definition: {dim.definition}"
+        )
+        if len(orbiting) >= 2:
+            dim_text += (
+                f"\n**Construct 2 (ORBITING): {orbiting[0][0]}**\n"
+                f"- Definition: {orbiting[0][1]}"
+            )
+            dim_text += (
+                f"\n**Construct 3 (ORBITING): {orbiting[1][0]}**\n"
+                f"- Definition: {orbiting[1][1]}"
+            )
+        dimension_lines.append(dim_text)
+    return "\n\n".join(dimension_lines)
+
+
+# ---------------------------------------------------------------------------
+# JSON File Loader
+# ---------------------------------------------------------------------------
+
+
+def load_construct_from_file(path: str | Path) -> Construct:
+    """Load a construct definition from a JSON file.
+
+    Expected JSON format::
+
+        {
+            "name": "Construct Name",
+            "definition": "Full definition...",
+            "dimensions": [
+                {
+                    "name": "Dimension 1",
+                    "definition": "...",
+                    "example_items": ["item1", "item2"],
+                    "orbiting_dimensions": ["Dimension 2", "Dimension 3"]
+                }
+            ]
+        }
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        pydantic.ValidationError: If the JSON does not match the schema.
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return Construct.model_validate(data)
+
+
+# ---------------------------------------------------------------------------
+# Construct Fingerprint
+# ---------------------------------------------------------------------------
+
+
+def compute_fingerprint(construct: Construct) -> str:
+    """Compute a SHA-256 fingerprint of the full construct definition.
+
+    Deterministic: same construct always produces the same hash.
+    Used to ensure anti-homogeneity memory only returns items from
+    runs that used the exact same construct (name + definition + all
+    dimensions with their orbiting relationships).
+    """
+    payload = construct.model_dump_json()
+    return hashlib.sha256(payload.encode()).hexdigest()

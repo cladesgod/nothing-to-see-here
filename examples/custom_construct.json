@@ -1,0 +1,42 @@
+{
+    "name": "Job Satisfaction (JS)",
+    "definition": "A multidimensional construct measuring the degree to which individuals feel positive about various aspects of their jobs, encompassing satisfaction with pay, working conditions, supervision quality, and opportunities for advancement (Spector, 1997).",
+    "dimensions": [
+        {
+            "name": "Pay Satisfaction",
+            "definition": "The extent to which employees feel content with their compensation, benefits, and financial rewards relative to the work they perform.",
+            "example_items": [
+                "I am satisfied with my current salary.",
+                "My pay reflects the effort I put into my work."
+            ],
+            "orbiting_dimensions": ["Work Conditions", "Supervision Quality"]
+        },
+        {
+            "name": "Work Conditions",
+            "definition": "Satisfaction with the physical and social aspects of the work environment, including workspace quality, safety, and collegial relationships.",
+            "example_items": [
+                "My workplace provides a comfortable environment for productive work.",
+                "I feel safe and supported in my work setting."
+            ],
+            "orbiting_dimensions": ["Pay Satisfaction", "Advancement Opportunities"]
+        },
+        {
+            "name": "Supervision Quality",
+            "definition": "Perceived quality of management practices, including fairness, communication, feedback, and supportiveness of direct supervisors.",
+            "example_items": [
+                "My supervisor provides clear and constructive feedback.",
+                "I trust my supervisor to make fair decisions."
+            ],
+            "orbiting_dimensions": ["Pay Satisfaction", "Work Conditions"]
+        },
+        {
+            "name": "Advancement Opportunities",
+            "definition": "The perceived availability and fairness of opportunities for career growth, skill development, and upward mobility within the organization.",
+            "example_items": [
+                "There are sufficient opportunities for advancement in my organization.",
+                "I believe my efforts will lead to career growth."
+            ],
+            "orbiting_dimensions": ["Work Conditions", "Supervision Quality"]
+        }
+    ]
+}

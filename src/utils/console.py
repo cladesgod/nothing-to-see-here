@@ -9,6 +9,9 @@ Each agent has a distinct color for quick visual identification.
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -29,6 +32,88 @@ AGENT_COLORS = {
     "Human": "bold bright_white",
     "LewMod": "bold bright_cyan",
 }
+
+_VERBOSE_JSON_OUTPUT = False
+
+
+def set_verbose_json_output(enabled: bool) -> None:
+    """Enable/disable raw JSON rendering for structured agent outputs."""
+    global _VERBOSE_JSON_OUTPUT
+    _VERBOSE_JSON_OUTPUT = enabled
+
+
+def _raw_json(parsed: Any) -> str:
+    if hasattr(parsed, "model_dump"):
+        return json.dumps(parsed.model_dump(), ensure_ascii=True, indent=2)
+    return str(parsed)
+
+
+def format_structured_agent_output(agent_name: str, parsed: Any) -> str:
+    """Render parsed reviewer/meta outputs as compact human-readable text."""
+    if _VERBOSE_JSON_OUTPUT:
+        return _raw_json(parsed)
+
+    if agent_name == "ContentReviewer":
+        items = getattr(parsed, "items", [])
+        lines = [f"Reviewed items: {len(items)}"]
+        for it in items:
+            note = f" | note: {it.feedback}" if getattr(it, "feedback", "") else ""
+            lines.append(
+                f"- Item {it.item_number}: target={it.target_rating}, "
+                f"orbiting=({it.orbiting_1_rating},{it.orbiting_2_rating}){note}"
+            )
+        summary = getattr(parsed, "overall_summary", "")
+        if summary:
+            lines.append(f"\nOverall: {summary}")
+        return "\n".join(lines)
+
+    if agent_name == "LinguisticReviewer":
+        items = getattr(parsed, "items", [])
+        lines = [f"Reviewed items: {len(items)}"]
+        for it in items:
+            note = f" | note: {it.feedback}" if getattr(it, "feedback", "") else ""
+            lines.append(
+                f"- Item {it.item_number}: grammar={it.grammatical_accuracy}, "
+                f"ease={it.ease_of_understanding}, negative_free={it.negative_language_free}, "
+                f"clarity={it.clarity_directness}{note}"
+            )
+        summary = getattr(parsed, "overall_summary", "")
+        if summary:
+            lines.append(f"\nOverall: {summary}")
+        return "\n".join(lines)
+
+    if agent_name == "BiasReviewer":
+        items = getattr(parsed, "items", [])
+        lines = [f"Reviewed items: {len(items)}"]
+        for it in items:
+            note = f" | note: {it.feedback}" if getattr(it, "feedback", "") else ""
+            lines.append(f"- Item {it.item_number}: bias_score={it.score}{note}")
+        summary = getattr(parsed, "overall_summary", "")
+        if summary:
+            lines.append(f"\nOverall: {summary}")
+        return "\n".join(lines)
+
+    if agent_name == "MetaEditor":
+        items = getattr(parsed, "items", [])
+        keep = [it.item_number for it in items if it.decision == "KEEP"]
+        revise = [it.item_number for it in items if it.decision == "REVISE"]
+        discard = [it.item_number for it in items if it.decision == "DISCARD"]
+        lines = [
+            f"Decisions: KEEP={len(keep)}, REVISE={len(revise)}, DISCARD={len(discard)}",
+            f"- KEEP: {', '.join(str(i) for i in keep) or '-'}",
+            f"- REVISE: {', '.join(str(i) for i in revise) or '-'}",
+            f"- DISCARD: {', '.join(str(i) for i in discard) or '-'}",
+        ]
+        for it in items:
+            if it.decision == "REVISE":
+                stem = it.revised_item_stem or "(no revised stem)"
+                lines.append(f"- Item {it.item_number} revise suggestion: {stem}")
+        summary = getattr(parsed, "overall_synthesis", "")
+        if summary:
+            lines.append(f"\nOverall: {summary}")
+        return "\n".join(lines)
+
+    return _raw_json(parsed)
 
 
 def validate_llm_response(content: str | None, agent_name: str) -> str:

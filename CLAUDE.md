@@ -19,11 +19,27 @@ pip install -e ".[dev]"
 # Run tests
 pytest tests/ -v
 
-# Run CLI (human feedback)
+# Run CLI (human feedback, AAAW preset — default)
 python run.py
+
+# Run CLI (explicit preset)
+python run.py --preset aaaw
+
+# Run CLI (custom construct from JSON)
+python run.py --construct-file examples/custom_construct.json
 
 # Run CLI (LewMod — automated expert feedback)
 python run.py --lewmod
+
+# Run API server (multi-user, scalable)
+pip install -e ".[api]"
+uvicorn src.api.app:app --reload
+
+# Run with Docker Compose (SQLite, dev)
+docker compose up
+
+# Run with Docker Compose (PostgreSQL, production)
+docker compose --profile production up
 
 # LangGraph Studio (web UI)
 langgraph dev
@@ -45,6 +61,10 @@ langgraph dev --tunnel
 - **structlog** - structured logging
 - **rich** - colored console output (agent communication, phase transitions)
 - **LangSmith** - tracing/observability (opt-in via LANGCHAIN_TRACING_V2=true)
+- **FastAPI** - REST API server (optional, `pip install -e ".[api]"`)
+- **Prometheus** - metrics export (optional, via prometheus_client)
+- **PostgreSQL** - production database (optional, via psycopg + langgraph-checkpoint-postgres)
+- **Docker** - containerized deployment (Dockerfile + docker-compose.yml)
 
 ## Architecture
 
@@ -77,53 +97,78 @@ Three reviewers run in **parallel**, results converge at Meta Editor.
 ## File Structure
 
 ```
-agents.toml             # Agent behavior config (models, temperatures, parameters)
+agents.toml             # Agent behavior config (models, temperatures, parameters, json_fix)
+examples/
+  custom_construct.json # Example custom construct definition (Job Satisfaction)
 src/
   config.py             # pydantic-settings (.env) + AgentSettings (agents.toml)
   models.py             # create_llm() factory with fallback chain (OpenRouter → Groq → Ollama)
   logging_config.py     # structlog setup
   schemas/
-    state.py            # MainState (outer), ReviewChainState (inner) - TypedDict, text fields
-    constructs.py       # AAAW (AI in Workplace) 6-dimension construct + orbiting dimensions
+    state.py            # MainState (outer), ReviewChainState (inner) - TypedDict
+    constructs.py       # Construct presets (AAAW built-in), registry, JSON loader, fingerprint
+    agent_outputs.py    # Pydantic output schemas for ALL agents (structured JSON)
+    phases.py           # Phase StrEnum (web_research, item_generation, review, etc.)
   agents/
     critic.py           # critic_node (visible node) + critic_router (conditional edge)
     web_surfer.py       # Tavily search + LLM summary (temp=0)
-    item_writer.py      # generates/revises items as natural language text (temp=1.0)
-    content_reviewer.py # Colquitt method: markdown table output (temp=0)
-    linguistic_reviewer.py  # 4 criteria, narrative evaluation (temp=0)
-    bias_reviewer.py    # 5-point bias scale, narrative evaluation (temp=0)
-    meta_editor.py      # synthesizes reviews → keep/revise/discard text (temp=0.3)
-    lewmod.py           # LewMod: automated expert feedback, replaces human-in-the-loop (temp=0.3)
+    item_writer.py      # generates/revises items via structured JSON (temp=1.0), item freeze logic
+    content_reviewer.py # Colquitt method: structured JSON ratings (temp=0)
+    linguistic_reviewer.py  # 4 criteria, structured JSON ratings (temp=0)
+    bias_reviewer.py    # 5-point bias scale, structured JSON ratings (temp=0)
+    meta_editor.py      # synthesizes reviews → structured JSON decisions (temp=0.3)
+    lewmod.py           # LewMod: automated expert feedback, structured JSON (temp=0.3)
   graphs/
     review_chain.py     # inner subgraph (parallel reviewers → meta_editor)
-    main_workflow.py    # outer graph (critic hub-spoke), module-level `graph` for langgraph dev
+    main_workflow.py    # outer graph (critic hub-spoke), deterministic scoring layer
+  api/                  # REST API layer (optional, pip install -e ".[api]")
+    app.py              # FastAPI application + routes (/api/v1/runs, health, metrics)
+    schemas.py          # Request/response Pydantic models
+    auth.py             # API key authentication (SHA-256 hashed, timing-safe)
+    queue.py            # WorkerPool — async worker pool with bounded concurrency
+    rate_limiter.py     # Token bucket rate limiter + per-user concurrency limiter
+    metrics.py          # Prometheus metrics (runs, queue depth, LLM calls, latency)
+    dependencies.py     # FastAPI dependency injection (auth, rate limiter, pool)
   persistence/
-    db.py               # SQLite connection + 6-table schema (WAL mode)
+    db.py               # SQLite + PostgreSQL connection abstraction (WAL / psycopg)
     repository.py       # CRUD functions for all pipeline data + get_previous_items()
   prompts/
     templates.py        # all system/task prompts per agent
   utils/
-    console.py          # rich console output helpers (agent messages, phase transitions, panels)
+    console.py          # rich console output helpers (agent messages, structured display)
+    structured_output.py    # invoke_structured_with_fix() — JSON fixer retry loop
+    deterministic_scoring.py # build_deterministic_meta_review() — code-computed decisions
+    injection_defense.py    # Two-layer LLM prompt injection defense for human feedback
+Dockerfile              # Container build (Python 3.13 + API deps)
+docker-compose.yml      # Dev (SQLite) + production (PostgreSQL) profiles
 ```
 
 ## Key Conventions
 
 ### Naming
 - Agent config in `agents.toml`: `[agents.websurfer]`, `[agents.item_writer]`, etc.
-- Phases are lowercase strings: `web_research`, `item_generation`, `review`, `human_feedback`, `revision`, `done`
+- Phases use `Phase` StrEnum (`src/schemas/phases.py`): `web_research`, `item_generation`, `review`, `human_feedback`, `revision`, `done`
 
 ### State Pattern
-- Outer graph: `MainState` (TypedDict, `total=False`). `items_text` and `review_text` are plain strings. `messages` uses `operator.add` (log accumulation). `run_id` and `db_path` for persistence. `previously_approved_items` uses `operator.add` for cross-round diversity.
-- Inner graph: `ReviewChainState` (TypedDict, `total=False`). All fields are plain strings (content_review, linguistic_review, bias_review, meta_review).
+- Outer graph: `MainState` (TypedDict, `total=False`). Key fields:
+  - `items_text` / `active_items_text` / `review_text` — agent outputs (structured JSON strings)
+  - `frozen_item_numbers: list[int]` — KEEP items preserved across revision rounds
+  - `human_item_decisions: dict[str, str]` — per-item KEEP/REVISE from human/LewMod
+  - `human_global_note: str` — optional free-text note from human
+  - `dimension_info` / `construct_definition` / `construct_fingerprint` — construct context
+  - `messages: Annotated[list[str], operator.add]` — log accumulation
+  - `run_id` / `db_path` — persistence identifiers
+  - `previously_approved_items: Annotated[list[str], operator.add]` — cross-round diversity
+- Inner graph: `ReviewChainState` (TypedDict, `total=False`). Fields: `items_text`, `construct_name`, `construct_definition`, `dimension_info`, `content_review`, `linguistic_review`, `bias_review`, `meta_review`.
 - Nodes return partial dicts. Only returned keys get updated.
-- DB persistence: each node opens its own `sqlite3.connect(db_path)` (not serializable in state).
+- DB persistence: each node opens via `get_connection(db_path)` (WAL + foreign keys).
 
 ### Agent Communication
-- **Natural language text** — agents communicate via plain text strings, matching the paper's AutoGen chat-based approach (Lee et al., 2025)
-- No JSON structured output (`json_schema` mode removed entirely)
-- All agents use `llm.ainvoke(messages)` → `response.content` (plain text)
+- **Structured JSON output** — all agents (reviewers, item writer, meta editor, LewMod) return Pydantic-validated JSON via `invoke_structured_with_fix()`. Schemas defined in `src/schemas/agent_outputs.py`.
+- **JSON fixer retry loop** — if LLM output fails parsing, a fixer LLM re-attempts with error context. Config: `[json_fix]` in `agents.toml` (max_attempts=8, memory_window=4).
+- **Deterministic scoring** — review chain wrapper applies `build_deterministic_meta_review()` to compute KEEP/REVISE/DISCARD from raw reviewer ratings in code (not LLM). Content c/d-value thresholds, linguistic min score, bias score all code-computed.
 - Reviewers process all items as a batch (3 reviewer + 1 meta = 4 LLM calls, not per-item)
-- Rich console shows paper-style `AgentName (to Target):` formatted messages
+- Rich console shows paper-style `AgentName (to Target):` formatted messages with compact structured summaries via `format_structured_agent_output()`
 
 ### Graph Compilation
 - `build_main_workflow(checkpointer=None, lewmod=False)` → MemorySaver + human feedback (CLI/standalone)
@@ -132,8 +177,10 @@ src/
 - Module-level `graph = build_main_workflow(checkpointer=False)` is what langgraph.json references
 
 ### Human-in-the-Loop / LewMod
-- **Human mode (default):** `interrupt(payload)` in `human_feedback_node` pauses the graph. Resume with `Command(resume="feedback text")` or `Command(resume="approve")`. Requires a checkpointer and `thread_id` in config.
-- **LewMod mode (`--lewmod`):** `lewmod_node` replaces `human_feedback_node`. Senior psychometrician LLM agent provides automated feedback. No interrupt — graph runs continuously. LewMod decides when to approve (no max_revisions limit).
+- **Human mode (default):** `interrupt(payload)` in `human_feedback_node` pauses the graph. CLI presents item-by-item KEEP/REVISE selection (not just free text). Resume with `Command(resume=dict)` or `Command(resume="approve")`. Requires a checkpointer and `thread_id` in config.
+- **Item freeze mechanism:** Items marked KEEP become frozen (`frozen_item_numbers`). Only active (non-frozen) items get reviewed and revised in subsequent rounds. `active_items_text` tracks the subset being worked on.
+- **LewMod mode (`--lewmod`):** `lewmod_node` replaces `human_feedback_node`. Returns structured `LewModOutput` with per-item keep/revise/discard lists. No interrupt — graph runs continuously. LewMod decides when to approve (no max_revisions limit).
+- **`--verbose-json` CLI flag:** Shows raw JSON blocks for reviewer/meta outputs instead of compact summaries.
 
 ## Config
 
@@ -163,9 +210,13 @@ temperature = 0.0
 # ... (see agents.toml for full config)
 
 [workflow]
-max_revisions = 3
+max_revisions = 5
 memory_enabled = true      # Use previous run items for diversity (anti-homogeneity)
 memory_limit = 5           # How many prior runs' items to include
+
+[json_fix]
+max_attempts = 8           # Fixer retry attempts for structured output parsing
+memory_window = 4          # Recent errors shown to fixer LLM
 ```
 
 Uses `tomllib` (Python stdlib). Loaded via `get_agent_settings()` in `src/config.py`. Pydantic-validated.
@@ -206,26 +257,32 @@ Model selection is done exclusively via `agents.toml` (no env var overrides).
 
 ## Quality Thresholds (Colquitt et al., 2019)
 
-Quality assessment is done by LLM reviewers in natural language. Reviewers are prompted with these criteria:
+LLM reviewers output structured JSON ratings. Final KEEP/REVISE/DISCARD decisions are computed deterministically in code (`src/utils/deterministic_scoring.py`):
 
-| Metric | Formula | Threshold |
-|--------|---------|-----------|
-| c-value (content validity) | target_rating / 6 (7-point scale, a-1=6) | >= 0.83 |
-| d-value (distinctiveness) | mean(target - orbiting) / 6 | >= 0.35 |
-| Linguistic | 4 criteria, 5-point scale | qualitative assessment |
-| Bias | 5-point scale (gender, religion, race, age, culture) | qualitative assessment |
+| Metric | Formula | Threshold | Decision Impact |
+|--------|---------|-----------|-----------------|
+| c-value (content validity) | target_rating / 6 (7-point scale, a-1=6) | >= 0.83 | Must pass for KEEP |
+| d-value (distinctiveness) | mean(target - orbiting) / 6 | >= 0.35 | Must pass for KEEP |
+| Linguistic min | min(grammar, understanding, negative_free, clarity) | >= 4 | Below 2 → DISCARD |
+| Bias score | single 1-5 score | >= 4 | Below 2 → DISCARD |
+
+Decision logic: `content_ok AND bias>=4 AND ling_min>=4` → KEEP; `bias<=2 OR ling_min<=2` → DISCARD; otherwise → REVISE.
 
 ## Testing
 
 ```bash
-pytest tests/ -v               # all tests (144 total)
-pytest tests/test_schemas.py   # construct + state schema tests
-pytest tests/test_agents.py    # critic node + router + lewmod tests
-pytest tests/test_workflow.py  # graph structure + retry policy tests
-pytest tests/test_config.py    # agents.toml config, retry, provider tests
-pytest tests/test_models.py    # LLM factory + fallback chain tests
-pytest tests/test_evals.py     # golden dataset, score parsing, caching
-pytest tests/test_persistence.py  # SQLite DB, CRUD, anti-homogeneity queries
+pytest tests/ -v                        # all tests (238 total)
+pytest tests/test_schemas.py            # construct, state, agent_outputs, phases
+pytest tests/test_agents.py             # critic node + router + lewmod + web search caching
+pytest tests/test_workflow.py           # graph structure + retry policy + human feedback + item freeze
+pytest tests/test_config.py             # agents.toml config, retry, provider, json_fix, api
+pytest tests/test_models.py             # LLM factory + fallback chain tests
+pytest tests/test_persistence.py        # SQLite DB, CRUD, anti-homogeneity, research cache
+pytest tests/test_deterministic_scoring.py  # deterministic KEEP/REVISE/DISCARD rules
+pytest tests/test_prompts.py            # prompt template formatting
+pytest tests/test_run_report.py         # run report / KEEP metrics extraction
+pytest tests/test_api.py               # API layer: auth, rate limiter, concurrency, schemas, DB abstraction
+pytest tests/test_injection_defense.py # prompt injection defense: schema, layers, fail-open, config
 ```
 
 Tests use mock API keys (`OPENROUTER_API_KEY=test-key`) set in `conftest.py`. No real API calls in tests.
@@ -234,12 +291,91 @@ Tests use mock API keys (`OPENROUTER_API_KEY=test-key`) set in `conftest.py`. No
 
 - `PAPER_VS_IMPLEMENTATION.md` - Detailed comparison: what the paper does vs what we changed and why
 - `IMPROVEMENTS.md` - Karsilasilan sorunlar, cozumler ve sonuclar (gelistirme raporu)
+- `COMPARISON.md` - LM-AIG vs MAPIG (Psynalytics) feature comparison
 
 ## Changelog
 
 All significant additions and changes to the codebase are logged here.
 
 **Iyilestirme sonuclari:** Her iyilestirme sonrasinda sonuclar `IMPROVEMENTS.md`'ye eklenmeli (sorun → cozum → sonuc formati).
+
+### 2026-02-10: Dual-LLM Prompt Injection Defense for Human Feedback
+- **New feature:** Dual-LLM prompt injection defense for human feedback `global_note` input. Two independent LLMs perform the same injection check — model diversity means if one LLM is fooled by a sophisticated injection, the other catches it.
+- **Architecture:** Layer 1 = Primary LLM (OpenRouter, `llama-4-scout`), Layer 2 = Cross-validation LLM (Groq, `llama-3.3-70b-versatile`). Same prompt, different models. Both must PASS. If either returns STOP with confidence >= threshold (default 0.7), run terminates (`Phase.DONE`) with generic rejection message. Layer 1 STOP skips Layer 2 (token savings). If Groq not configured, Layer 2 skipped (fail-open). Defense LLM errors → input passes through.
+- **Configuration:** `[prompt_injection]` in `agents.toml` (enabled, threshold, min_input_length). `[agents.injection_classifier]` for model/temperature + Groq fallback model.
+- **Injection vector:** `global_note` free text flows unsanitized into `ITEM_WRITER_REVISE` template via `_format_human_feedback_for_prompt()`. Primary injection surface — `item_decisions` are validated (KEEP/REVISE only).
+- **invoke_structured_with_fix:** Added optional `llm` parameter to support pre-built LLM instances (used by Layer 2 to pass Groq LLM directly).
+- **human_feedback_node:** Converted from `def` to `async def` for `await check_prompt_injection()`. LangGraph compatible.
+- **New file:** `src/utils/injection_defense.py` (InjectionCheckResult schema, shared prompt, _create_groq_llm(), check_prompt_injection())
+- **New test file:** `tests/test_injection_defense.py` — 17 tests: schema validation, config bypass, both-pass, layer1-stop, layer2-stop, below-threshold, groq-not-configured, fail-open, same-messages verification.
+- **Tests:** 238 total (was 221). All existing workflow tests updated for async human_feedback_node.
+- **Files changed:** `src/config.py`, `agents.toml`, `src/utils/structured_output.py`, `src/graphs/main_workflow.py`, `tests/test_workflow.py`, `CLAUDE.md`
+
+### 2026-02-10: Enterprise API Layer — Queue System, Rate Limiting, Multi-User Support
+- **FastAPI REST API:** New `src/api/` package with 7 modules. Endpoints: POST /api/v1/runs (submit), GET /api/v1/runs/{id} (status), GET /api/v1/runs (list), POST /api/v1/runs/{id}/feedback, DELETE /api/v1/runs/{id} (cancel), GET /api/v1/health, GET /api/v1/metrics (Prometheus).
+- **Async worker pool:** `WorkerPool` with `asyncio.Semaphore` — bounded concurrency (configurable `max_workers`). Each pipeline run executes as an independent asyncio task. Tier 2 upgrade path to Celery+Redis documented.
+- **API key authentication:** SHA-256 hashed keys with constant-time comparison (hmac.compare_digest). Keys loaded from `AIG_API_KEYS` env var. Dev key auto-registered when no keys configured.
+- **Token bucket rate limiter:** Per-user minute and daily rate limits. Configurable via `agents.toml` `[api]` section.
+- **Per-user concurrency limiter:** Limits concurrent pipeline runs per API key (default: 3). Prevents single user from monopolizing workers.
+- **Prometheus metrics:** Runs submitted/completed counters, queue depth gauge, active workers gauge, LLM call counters, HTTP request latency histograms.
+- **Database abstraction:** `get_connection()` now routes to SQLite or PostgreSQL based on URL scheme. `PG_SCHEMA_SQL` with SERIAL columns. psycopg lazy import (only when PostgreSQL URL provided).
+- **PostgreSQL checkpointer:** `build_main_workflow(checkpointer="postgres", db_url=...)` uses `PostgresSaver` from `langgraph-checkpoint-postgres`.
+- **Docker deployment:** `Dockerfile` (Python 3.13, non-root user) + `docker-compose.yml` with dev (SQLite) and production (PostgreSQL) profiles.
+- **Config additions:** `APIConfig` model in `src/config.py`, `[api]` section in `agents.toml`, `DATABASE_URL` in `Settings`.
+- **New dependencies (optional):** `fastapi`, `uvicorn`, `prometheus-client`, `langgraph-checkpoint-postgres`, `psycopg` — all under `[api]` extras group.
+- **Tests:** 221 total (was 183). Added 38 API tests: auth (10), rate limiter (4), token bucket (5), concurrency limiter (6), schemas (9), config (2), DB abstraction (2).
+- **Zero regression:** CLI mode (`python run.py`) works identically. API is additive — same graph, same agents, same DB.
+- **New files:** `src/api/__init__.py`, `src/api/app.py`, `src/api/schemas.py`, `src/api/auth.py`, `src/api/queue.py`, `src/api/rate_limiter.py`, `src/api/metrics.py`, `src/api/dependencies.py`, `Dockerfile`, `docker-compose.yml`, `tests/test_api.py`
+- **Modified files:** `src/config.py`, `agents.toml`, `src/persistence/db.py`, `src/graphs/main_workflow.py`, `pyproject.toml`, `CLAUDE.md`
+
+### 2026-02-10: Structured JSON Output + Deterministic Scoring + Item Freeze
+- **Structured JSON output restored:** All agents now return Pydantic-validated JSON via `invoke_structured_with_fix()`. New `src/schemas/agent_outputs.py` defines output schemas for all 8 agents (WebSurferOutput, ItemWriterOutput, ContentReviewerOutput, LinguisticReviewerOutput, BiasReviewerOutput, MetaEditorOutput, LewModOutput). JSON fixer retry loop with error memory (`[json_fix]` config in agents.toml).
+- **Deterministic scoring layer:** `src/utils/deterministic_scoring.py` — `build_deterministic_meta_review()` computes KEEP/REVISE/DISCARD from raw reviewer ratings in code. Content c/d-value, linguistic min, bias score thresholds are code-enforced. Review chain wrapper applies this after LLM meta editor output.
+- **Item freeze mechanism:** KEEP items are frozen across revision rounds (`frozen_item_numbers` in MainState). Only active items get reviewed/revised. `active_items_text` tracks the subset. Item numbers aligned via `_align_generated_to_targets()`. Frozen items enforced via `_enforce_keep_locks()`.
+- **Structured human feedback:** CLI now presents item-by-item KEEP/REVISE selection (not just free text). `human_item_decisions: dict[str, str]` and `human_global_note: str` in MainState. LewMod also returns per-item decisions.
+- **Run report with metrics:** Final output shows KEEP items with their deterministic metrics (c-value, d-value, ling_min, bias). Backfills from earlier rounds if current round metrics are missing.
+- **`--verbose-json` CLI flag:** Shows raw JSON blocks for reviewer/meta outputs.
+- **New files:** `src/schemas/agent_outputs.py`, `src/utils/deterministic_scoring.py`, `src/utils/structured_output.py`, `tests/test_deterministic_scoring.py`, `tests/test_prompts.py`, `tests/test_run_report.py`
+- **Tests:** 209 total (was 173). Added deterministic scoring tests, prompt tests, run report tests, item freeze workflow tests.
+- **Files changed:** All agent files, `src/schemas/state.py`, `src/config.py`, `agents.toml`, `src/graphs/main_workflow.py`, `src/utils/console.py`, `run.py`, all test files.
+
+### 2026-02-10: Complexity Cleanup + Consistency Pass
+- **Run stability:** `run.py` now resolves `max_revisions` at runtime (not argparse parse-time), uses safer DB path resolution from `PRAGMA database_list` row fields with fallback to `DB_PATH`, and wraps DB lifecycle in `try/finally` with failure status persistence.
+- **Phase consistency:** Added `Phase` StrEnum (`src/schemas/phases.py`) and replaced scattered raw phase strings across core workflow/agent nodes.
+- **DB access consistency:** Replaced scattered `sqlite3.connect(db_path)` calls in agents/graph wrapper with `get_connection(db_path)` to keep WAL/foreign-key behavior consistent.
+- **Within-run memory fix:** `previously_approved_items` now actually accumulates prior revision-round item sets in Item Writer (used by anti-homogeneity prompt context).
+- **Config simplification:** Removed unused config fields (`rate_limit_rpm`).
+- **Docs drift fixes:** Updated `README.md`, `COMPARISON.md`, and `PAPER_VS_IMPLEMENTATION.md` to match current construct-agnostic implementation and current project/test reality.
+- **Files changed:** `run.py`, `agents.toml`, `src/config.py`, `src/schemas/phases.py`, `src/schemas/state.py`, `src/agents/critic.py`, `src/agents/web_surfer.py`, `src/agents/item_writer.py`, `src/agents/lewmod.py`, `src/graphs/main_workflow.py`, `README.md`, `COMPARISON.md`, `PAPER_VS_IMPLEMENTATION.md`, `tests/test_config.py`, `CLAUDE.md`
+
+### 2026-02-10: Fingerprint-Based Research Caching
+- **New feature:** Two-layer caching for WebSurfer research, keyed by construct fingerprint (SHA-256).
+- **Layer 1 — DB research reuse:** Before running Tavily + LLM, checks if a prior run with the same exact construct already has a research_summary in the DB. If found (within TTL), skips the entire WebSurfer pipeline (0 API calls). New function: `get_cached_research()` in repository.py.
+- **Layer 2 — File cache key fix:** Tavily search result file cache now uses `fingerprint[:12]` instead of `construct_name` slug. Prevents cache pollution between different constructs that share a name.
+- **TTL:** Both layers respect `cache_ttl_hours` from `agents.toml` (default: 24 hours).
+- **No schema changes:** Uses existing `research` table joined through `runs.construct_fingerprint`.
+- **Tests:** 173 total (was 167). Added 5 DB research cache tests + 1 file cache fingerprint isolation test.
+- **Files changed:** `src/persistence/repository.py`, `src/agents/web_surfer.py`, `tests/test_persistence.py`, `CLAUDE.md`
+
+### 2026-02-10: Construct Fingerprint — Memory Correctness
+- **New feature:** SHA-256 fingerprint of the full construct definition (name + dimensions + orbiting). Used for both anti-homogeneity memory filtering and research caching.
+- **Problem solved:** With construct-agnostic design, `get_previous_items()` filtered by `construct_name` — two different "Job Satisfaction" constructs would share memory incorrectly. Now filters by exact fingerprint.
+- **Architecture:** `compute_fingerprint(construct)` uses `model_dump_json()` + `hashlib.sha256()`. Stored in `runs.construct_fingerprint` DB column with auto-migration for existing DBs.
+- **State change:** `MainState` gets `construct_fingerprint: str` field.
+- **Tests:** 167 total (was ~156). Added 5 fingerprint hash tests + 2 persistence fingerprint tests + 1 null fingerprint test.
+- **Files changed:** `src/schemas/constructs.py`, `src/schemas/state.py`, `src/persistence/db.py`, `src/persistence/repository.py`, `run.py`, `src/agents/item_writer.py`, `tests/test_schemas.py`, `tests/test_persistence.py`, `CLAUDE.md`
+
+### 2026-02-10: Construct-Agnostic Design
+- **New feature:** The system now accepts any psychological construct at runtime, not just AAAW. Built-in presets (currently AAAW) plus custom construct loading from JSON files.
+- **CLI:** `--preset aaaw` (default) or `--construct-file path/to/construct.json`. Mutually exclusive. `--construct` flag replaced by `--preset`.
+- **Architecture:** Dimension info is now pre-built at the entry point via `build_dimension_info(construct)` and passed through `MainState.dimension_info`. The `review_chain_wrapper` in `main_workflow.py` no longer imports `AAAW_CONSTRUCT` — it reads dimension info from state.
+- **Preset registry:** `CONSTRUCT_PRESETS` dict in `constructs.py` maps preset names to `Construct` objects. `get_preset()`, `list_presets()` helpers.
+- **JSON loader:** `load_construct_from_file(path)` loads and Pydantic-validates a custom construct from a JSON file.
+- **Backward compatible:** `python run.py` with no args defaults to `--preset aaaw` — identical behavior to before.
+- **State change:** `MainState` gets `dimension_info: str` field (pre-formatted dimension + orbiting text).
+- **Tests:** ~156 total (was 144). Added 16 new tests: preset registry (6), build_dimension_info (5), load_construct_from_file (4), MainState dimension_info (1).
+- **New files:** `examples/custom_construct.json`
+- **Files changed:** `src/schemas/constructs.py`, `src/schemas/state.py`, `src/graphs/main_workflow.py`, `run.py`, `tests/test_schemas.py`, `CLAUDE.md`
 
 ### 2026-02-10: Smart Fallback — Timeout + Min Response Length
 - **New feature:** Two additional fallback triggers for the provider chain (OpenRouter → Groq → Ollama). Previously only exceptions triggered a fallback.
@@ -251,7 +387,7 @@ All significant additions and changes to the codebase are logged here.
 - **Files changed:** `agents.toml`, `src/config.py`, `src/models.py`, `tests/test_models.py`, `tests/test_config.py`, `CLAUDE.md`
 
 ### 2026-02-10: SQLite Persistence + Anti-Homogeneity Guard
-- **New feature:** SQLite persistence layer (`src/persistence/`) for full pipeline state. 6 tables: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`, `eval_results`. Zero new dependencies (`sqlite3` is Python stdlib).
+- **New feature:** SQLite persistence layer (`src/persistence/`) for full pipeline state. 5 tables: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`. Zero new dependencies (`sqlite3` is Python stdlib).
 - **Anti-homogeneity:** `get_previous_items()` fetches final items from completed runs for the same construct. Item Writer reads these from DB and injects into prompts to push for diversity. `previously_approved_items` state field accumulates across revision rounds within a run. Configurable via `agents.toml`: `memory_enabled` (on/off) and `memory_limit` (how many prior runs).
 - **Prompt changes:** `ITEM_WRITER_GENERATE` and `ITEM_WRITER_REVISE` get `{previously_approved_items}` section. `META_EDITOR_TASK` gets Rule 6 (inter-item similarity check).
 - **Agent persistence:** All agents now persist to DB — WebSurfer (research), ItemWriter (generation rounds), ReviewChain (reviews), Human/LewMod (feedback). Each node opens its own `sqlite3.connect(db_path)`.

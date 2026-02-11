@@ -49,11 +49,11 @@ Paper'dan farkli olarak bilincli tercih yaptigimiz noktalar.
 - **Biz:** Python fonksiyonu (`critic_router`). `current_phase` state degiskenine gore deterministik routing.
 - **Avantaj:** Daha hizli (0ms vs ~2s), ucuz ($0), %100 guvenilir, kolay test edilebilir.
 
-### 3. Dogal Dil Iletisimi
+### 3. Structured JSON Output + Deterministic Scoring
 
 - **Paper:** AutoGen GroupChat — agentlar dogal dil mesajlari ile iletisim kurar.
-- **Biz:** Ayni yaklasim. Tum agentlar plain text uretir. JSON structured output yok.
-- **Avantaj:** JSON parse hatalari sifir. Model ciktisi dogrudan okunabilir ve debug edilebilir.
+- **Biz:** Tum agentlar Pydantic-validated JSON donduruyor (`agent_outputs.py`). `invoke_structured_with_fix()` ile fixer retry loop. Deterministic scoring layer reviewer ratinglerinden KEEP/REVISE/DISCARD hesapliyor.
+- **Avantaj:** Tekrarlanabilir sonuclar (code-computed decisions). JSON parse hatalari fixer ile otomatik onarimlaniyor. Reviewer ciktilari hem structured hem de compact human-readable olarak gosteriliyor.
 
 ### 4. Batch Review (4 LLM cagrisi)
 
@@ -89,6 +89,18 @@ Paper'dan farkli olarak bilincli tercih yaptigimiz noktalar.
 
 ## Eklenen Ozellikler
 
+### 13. Karmasiklik Azaltma ve Tutarlilik Temizligi (2026-02-10)
+
+- **Sorun:** Projede faz string'leri daginikti, DB baglanti acma-kapama kaliplari farkliydi, bazi config alanlari kullanimda degildi ve dokumantasyonun bir kismi guncel implementasyondan sapmisti.
+- **Cozum:**
+  - `Phase` StrEnum eklendi ve ana akis/agent gecislerinde kullanildi.
+  - `run.py` DB yasam dongusu `try/finally` ile guvenceye alindi; parse-time config bagimliligi azaltildi; DB path cozumu daha guvenli hale getirildi.
+  - Agent/graph DB erisimleri `get_connection(db_path)` etrafinda standartlastirildi.
+  - `previously_approved_items` artik revision turlarinda gercekten birikiyor.
+  - Kullanilmayan config alanlari (`rate_limit_rpm`) kaldirildi.
+  - `README.md`, `COMPARISON.md`, `PAPER_VS_IMPLEMENTATION.md` güncellendi.
+- **Sonuc:** Kod yolaklari daha ongorulebilir ve bakimi daha kolay hale geldi; konfigurasyon/akis davranisi sadelesti; dokumantasyon-kod uyumu artti.
+
 ### 8. LewMod — Otomatik Uzman Feedback
 
 - **Sorun:** Human-in-the-loop her seferinde manuel onay gerektiriyor.
@@ -121,10 +133,24 @@ Paper'dan farkli olarak bilincli tercih yaptigimiz noktalar.
 
 - **Sorun:** Pipeline her calistirmada sifirdan basliyor — onceki run'lardaki maddeler, review'lar, feedback kaybolur. Ayrica Lee et al. (2025) AI-uretilen maddelerin birbirine cok benzer oldugunu buldu (3/24 item dusuk content validity).
 - **Cozum:**
-  - SQLite persistence layer (`src/persistence/`). 6 tablo: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`, `eval_results`. Zero dependency (`sqlite3` stdlib).
+  - SQLite persistence layer (`src/persistence/`). 5 tablo: `runs`, `research`, `generation_rounds`, `reviews`, `feedback`. Zero dependency (`sqlite3` stdlib).
   - `get_previous_items()` ile Item Writer, onceki run'larin final maddelerini DB'den okuyarak prompt'a enjekte eder.
   - Meta Editor'e Rule 6 (inter-item similarity check) eklendi.
   - `agents.toml`'dan kontrol edilebilir: `memory_enabled = true/false`, `memory_limit = 5` (kac onceki run dahil edilsin).
 - **Sonuc:** 133 test (onceki 103). Cross-run ve cross-round item diversity sistematik olarak zorlanir. Tum pipeline state'i kalici olarak saklanir.
 - **Dosyalar:** `src/persistence/db.py`, `src/persistence/repository.py`, `src/agents/item_writer.py`, `src/agents/web_surfer.py`, `src/agents/lewmod.py`, `src/graphs/main_workflow.py`, `src/prompts/templates.py`, `src/schemas/state.py`, `src/config.py`, `agents.toml`, `run.py`, `tests/test_persistence.py` (yeni), `tests/test_config.py`
+
+### 14. Structured JSON Output + Deterministic Scoring + Item Freeze (2026-02-10)
+
+- **Sorun:** Agentlar plain text donduruyor, KEEP/REVISE/DISCARD kararlari tamamen LLM'e bagimli (tekrarlanamaz), KEEP item'lar sonraki revision turlarinda degistirilebiliyordu.
+- **Cozum:**
+  - **Structured JSON output:** Tum agentlar `invoke_structured_with_fix()` ile Pydantic-validated JSON donduruyor. Yeni schema dosyasi: `src/schemas/agent_outputs.py` (WebSurferOutput, ItemWriterOutput, ContentReviewerOutput, LinguisticReviewerOutput, BiasReviewerOutput, MetaEditorOutput, LewModOutput). JSON fixer retry loop with error memory (`[json_fix]` config in agents.toml).
+  - **Deterministic scoring:** `src/utils/deterministic_scoring.py` — `build_deterministic_meta_review()` ham reviewer ratinglerinden KEEP/REVISE/DISCARD hesapliyor: c-value/d-value + ling_min + bias score threshold'lari kodda enforce ediliyor. LLM meta editor hala sentez yapiyor ama son kararlar koddan geliyor.
+  - **Item freeze:** KEEP item'lar `frozen_item_numbers` ile revision turlarinda korunuyor. Sadece active (frozen olmayan) item'lar review/revise ediliyor. `active_items_text` subset tracking. Item numaralari `_align_generated_to_targets()` ile hizalaniyor.
+  - **Structured human feedback:** CLI'da item-by-item KEEP/REVISE secimi (sadece serbest metin degil). `human_item_decisions: dict[str, str]` ve `human_global_note: str` MainState'de. LewMod da per-item structured kararlar donduruyor.
+  - **Run report with metrics:** Final output KEEP item'lari deterministic metrikleri (c-value, d-value, ling_min, bias) ile gosteriyor.
+  - **`--verbose-json` CLI flag:** Reviewer/meta ciktilarini raw JSON olarak gosteriyor.
+- **Sonuc:** 209 test (onceki 173). Tekrarlanabilir KEEP/REVISE/DISCARD kararlari. KEEP item'lar korunuyor. Structured agent ciktilari hem makine hem insan tarafindan okunabilir.
+- **Yeni dosyalar:** `src/schemas/agent_outputs.py`, `src/utils/deterministic_scoring.py`, `src/utils/structured_output.py`, `tests/test_deterministic_scoring.py`, `tests/test_prompts.py`, `tests/test_run_report.py`
+- **Degisen dosyalar:** Tum agent dosyalari, `src/schemas/state.py`, `src/config.py`, `agents.toml`, `src/graphs/main_workflow.py`, `src/utils/console.py`, `run.py`, tum test dosyalari.
 

@@ -5,13 +5,16 @@ Evaluates items for potential bias using natural language output.
 
 from __future__ import annotations
 
+import json
+
 import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from src.models import create_llm
 from src.prompts.templates import BIAS_REVIEWER_SYSTEM, BIAS_REVIEWER_TASK
+from src.schemas.agent_outputs import BiasReviewerOutput
 from src.schemas.state import ReviewChainState
-from src.utils.console import print_agent_message, validate_llm_response
+from src.utils.console import format_structured_agent_output, print_agent_message
+from src.utils.structured_output import invoke_structured_with_fix
 
 logger = structlog.get_logger(__name__)
 
@@ -32,12 +35,13 @@ async def bias_reviewer_node(state: ReviewChainState) -> dict:
 
     logger.info("bias_reviewer_start")
 
-    llm = create_llm("bias_reviewer")
-
     prompt = BIAS_REVIEWER_TASK.format(
         items_text=items_text,
         construct_name=construct_name,
         target_population=target_population,
+    ) + (
+        "\n\nReturn ONLY JSON with fields:\n"
+        '{"items":[{"item_number":1,"score":5,"feedback":"..."}],"overall_summary":"..."}'
     )
 
     messages = [
@@ -45,11 +49,15 @@ async def bias_reviewer_node(state: ReviewChainState) -> dict:
         HumanMessage(content=prompt),
     ]
 
-    response = await llm.ainvoke(messages)
-    review_text = validate_llm_response(response.content, "BiasReviewer")
+    parsed = await invoke_structured_with_fix(
+        agent_name="bias_reviewer",
+        messages=messages,
+        schema=BiasReviewerOutput,
+    )
+    review_text = json.dumps(parsed.model_dump(), ensure_ascii=True, indent=2)
 
     logger.info("bias_reviewer_done")
 
-    print_agent_message("BiasReviewer", "Critic", review_text)
+    print_agent_message("BiasReviewer", "Critic", format_structured_agent_output("BiasReviewer", parsed))
 
     return {"bias_review": review_text}

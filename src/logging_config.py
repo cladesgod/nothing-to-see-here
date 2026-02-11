@@ -28,8 +28,3 @@ def setup_logging(log_level: str = "INFO") -> None:
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
         cache_logger_on_first_use=True,
     )
-
-
-def get_logger(name: str) -> structlog.stdlib.BoundLogger:
-    """Get a named structlog logger."""
-    return structlog.get_logger(name)

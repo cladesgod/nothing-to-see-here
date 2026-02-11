@@ -18,7 +18,7 @@
 
 **Why LangGraph?** AutoGen's nested chat pattern maps well to LangGraph's subgraph pattern, but LangGraph offers: native `interrupt()` for HITL, built-in checkpointing, streaming, and LangSmith observability. LangGraph also makes the graph topology explicit and inspectable.
 
-**Communication style:** Both the paper and our implementation use **natural language text** for all agent-to-agent communication. No JSON structured output — reviewers produce markdown tables and narrative feedback, the meta editor synthesizes them as text, and the item writer reads text feedback for revisions. This matches the paper's AutoGen GroupChat approach exactly.
+**Communication style:** Both systems use LLM-generated content for agent communication. Our implementation adds a **structured JSON output layer** — all agents return Pydantic-validated JSON via `invoke_structured_with_fix()`, with a fixer retry loop for robustness. Console display uses `format_structured_agent_output()` for compact human-readable summaries.
 
 ---
 
@@ -40,13 +40,14 @@
 
 | Aspect | Paper | Our Implementation |
 |--------|-------|--------------------|
-| **Output format** | Natural language chat messages | Natural language text (plain strings in state) |
-| **Reviewer output** | Text tables + narrative feedback | Markdown tables + narrative feedback |
-| **Meta editor output** | KEEP/REVISE/DISCARD recommendations as text | Same — text-based recommendations |
-| **Item writer output** | Numbered list of items | Numbered list with rationale per item |
-| **Structured output** | None (AutoGen uses chat messages) | None — `llm.ainvoke(messages)` → `response.content` |
+| **Output format** | Natural language chat messages | Structured JSON (Pydantic-validated) |
+| **Reviewer output** | Text tables + narrative feedback | JSON with numeric ratings per item (`agent_outputs.py`) |
+| **Meta editor output** | KEEP/REVISE/DISCARD recommendations as text | JSON with per-item decision + reason + revised stem |
+| **Item writer output** | Numbered list of items | JSON with item_number, stem, rationale per item |
+| **Structured output** | None (AutoGen uses chat messages) | `invoke_structured_with_fix()` — fixer retry loop with error memory |
+| **Decision computation** | LLM decides KEEP/REVISE/DISCARD | **Deterministic scoring in code** from raw reviewer ratings |
 
-**Key design decision:** The paper uses AutoGen's GroupChat where agents communicate via natural language messages — there is no JSON parsing or structured output extraction. Our implementation matches this: all agents produce plain text, and the state holds string fields (`items_text`, `review_text`, `content_review`, etc.). This eliminates JSON parsing failures entirely and makes the agent communication visible and debuggable.
+**Key design decision:** The paper uses AutoGen's GroupChat where agents produce free text. Our implementation uses **structured JSON output** — all agents return Pydantic models (`ContentReviewerOutput`, `ItemWriterOutput`, etc.) via `invoke_structured_with_fix()`. If the LLM output fails JSON parsing, a fixer LLM re-attempts with error context (configurable: max_attempts=8, memory_window=4). This enables the **deterministic scoring layer** (`build_deterministic_meta_review()`) which computes KEEP/REVISE/DISCARD from raw numeric ratings using code-enforced thresholds — not LLM judgment.
 
 ---
 
@@ -72,7 +73,7 @@ The critic still handles important logic: checking `revision_count >= max_revisi
 | **Pattern** | 3 reviewers → meta editor | START → {content, linguistic, bias} → meta_editor → END |
 | **State isolation** | Nested chat context | `ReviewChainState` (separate TypedDict from `MainState`) |
 | **Item processing** | Each item reviewed as part of group discussion | **Batch review** — all items sent to each reviewer at once (4 LLM calls total) |
-| **Orbiting dimensions** | Passed to content reviewer | `review_chain_wrapper` looks up orbiting dims from `AAAW_CONSTRUCT` and injects as `dimension_info` text |
+| **Orbiting dimensions** | Passed to content reviewer | Entry point builds `dimension_info` from selected construct (preset or JSON) and passes it through state |
 
 **Batch review (4 LLM calls):** The paper's AutoGen setup sends items to reviewers as part of a group chat. Our implementation sends all items as a batch to each of the 3 reviewers + 1 meta editor = 4 LLM calls total. This is more efficient than per-item review (which would be 8 items × 4 agents = 32 calls).
 
@@ -98,10 +99,12 @@ The critic still handles important logic: checking `revision_count >= max_revisi
 |--------|-------|--------------------|
 | **Mechanism** | AutoGen human proxy agent | LangGraph `interrupt()` + `Command(resume=...)` |
 | **Persistence** | Chat history | `MemorySaver` checkpointer (in-memory) |
-| **Resume** | Continue chat | `graph.astream(Command(resume="feedback"), config)` |
-| **Actions** | Approve or provide feedback | `"approve"` → done, any other text → revision |
+| **Resume** | Continue chat | `graph.astream(Command(resume=dict), config)` |
+| **Actions** | Approve or provide feedback | Item-by-item KEEP/REVISE + optional global note, or `"approve"` |
+| **Item freeze** | Not mentioned | KEEP items frozen across rounds (`frozen_item_numbers`) |
+| **LewMod** | Not mentioned | Automated expert agent with structured per-item decisions |
 
-**Advantage:** LangGraph's interrupt is more robust - the graph state is fully checkpointed, so the process can restart and resume from exactly where it paused. In production, `PostgresSaver` would replace `MemorySaver` for persistence across process restarts.
+**Advantage:** LangGraph's interrupt is more robust - the graph state is fully checkpointed. Our structured feedback (`human_item_decisions` dict) enables per-item control with item freezing — KEEP items are preserved unchanged across revision rounds, and only active items get re-reviewed. In production, `PostgresSaver` would replace `MemorySaver`.
 
 ---
 
@@ -109,14 +112,19 @@ The critic still handles important logic: checking `revision_count >= max_revisi
 
 | Metric | Paper Formula | Threshold | Implementation |
 |--------|--------------|-----------|----------------|
-| **c-value** (content validity) | target_rating / (a-1), where a=7 | >= 0.83 | Content reviewer evaluates in text (7-point scale) |
-| **d-value** (distinctiveness) | mean(target - orbiting) / (a-1) | >= 0.35 | Content reviewer evaluates in text |
-| **Linguistic** | 4 criteria, 5-point scale | Score of 5 = sound | Linguistic reviewer narrative assessment |
-| **Bias** | 5-point scale (gender, religion, race, age, culture) | Score of 5 = unbiased | Bias reviewer narrative assessment |
+| **c-value** (content validity) | target_rating / (a-1), where a=7 | >= 0.83 | Content reviewer outputs JSON ratings → c-value computed in code |
+| **d-value** (distinctiveness) | mean(target - orbiting) / (a-1) | >= 0.35 | Content reviewer outputs JSON ratings → d-value computed in code |
+| **Linguistic** | 4 criteria, 5-point scale | Score of 5 = sound | Linguistic reviewer outputs JSON ratings → min score computed in code |
+| **Bias** | 5-point scale (gender, religion, race, age, culture) | Score of 5 = unbiased | Bias reviewer outputs JSON score → threshold checked in code |
 
-**Content validity uses the Colquitt method:** The content reviewer is prompted to rate each item on a 7-point scale (1 = extremely bad job of measuring the concept; 7 = extremely good job) for (1) the target dimension and (2) two orbiting (related but distinct) dimensions. c-value = rating / 6, d-value = mean(target - orbiting) / 6. Each AAAW dimension has two pre-defined orbiting dimensions in `constructs.py`.
+**Content validity uses the Colquitt method:** The content reviewer outputs structured JSON with `target_rating`, `orbiting_1_rating`, `orbiting_2_rating` per item. c-value = target / 6, d-value = mean(target - orbiting) / 6. Each construct dimension has two pre-defined orbiting dimensions in `constructs.py`.
 
-**Approach:** Matching the paper, reviewers produce text-based evaluations including ratings, and the meta editor synthesizes all reviews into KEEP/REVISE/DISCARD recommendations. No deterministic quality gates.
+**Deterministic scoring layer:** Unlike the paper where the meta editor LLM decides KEEP/REVISE/DISCARD, our implementation uses **code-computed decisions** in `build_deterministic_meta_review()`:
+- `content_ok AND bias>=4 AND ling_min>=4` → **KEEP**
+- `bias<=2 OR ling_min<=2` → **DISCARD**
+- Otherwise → **REVISE**
+
+The LLM meta editor still runs and provides synthesis, but final decisions come from deterministic code.
 
 ---
 
@@ -148,24 +156,28 @@ All temperatures match the paper's recommendations exactly.
 
 ## 11. What We Added (Not in Paper)
 
-1. **Per-agent model configuration** - Each agent can use a different LLM model, controlled via `agents.toml`
-2. **LangSmith observability** - All LLM calls and graph executions are traced
-3. **LangGraph Studio support** - Visual web UI for debugging via `langgraph dev`
-4. **Structured logging** - structlog with agent-level context (timings, phases)
-5. **Rich console output** - Colored, formatted agent messages matching paper's `AgentName (to Target):` style
-6. **Checkpointer abstraction** - `checkpointer=False` pattern for LangGraph Platform compatibility
-7. **LewMod (automated feedback)** - `--lewmod` flag replaces human-in-the-loop with an LLM-based senior psychometrician agent. Evaluates items holistically and decides APPROVE or REVISE. No max_revisions limit — LewMod controls its own termination. Same graph structure, only the feedback node function is swapped.
-8. **Centralized config** - `agents.toml` for all agent parameters (models, temperatures, num_items, max_results, etc.). Pydantic-validated via `AgentSettings` model.
-9. **Retry + Fallback provider chain** - Two-layer reliability: (a) LangGraph `RetryPolicy` for node-level automatic retry with exponential backoff. (b) `with_fallbacks()` for LLM-level fallback: OpenRouter → Groq → Ollama. Both layers compose — each retry attempt runs the full fallback chain. Configured via `agents.toml` `[retry]` and `[providers]` sections. Per-agent fallback model overrides supported.
+1. **Structured JSON output + fixer retry** — All agents return Pydantic-validated JSON. `invoke_structured_with_fix()` handles parse failures with a fixer LLM retry loop (max_attempts=8, error memory).
+2. **Deterministic scoring layer** — Code-computed KEEP/REVISE/DISCARD from raw reviewer ratings using Colquitt thresholds. Reproducible, testable, not dependent on LLM judgment for final decisions.
+3. **Item freeze mechanism** — KEEP items frozen across revision rounds. Only active items re-reviewed/revised. `frozen_item_numbers` in state, `active_items_text` subset tracking.
+4. **Structured human feedback** — Per-item KEEP/REVISE selection in CLI (not just free text). `human_item_decisions` dict in state.
+5. **Construct-agnostic design** — Any construct at runtime via `--preset` or `--construct-file`. SHA-256 fingerprint for memory correctness.
+6. **Anti-homogeneity guard** — SQLite persistence + cross-run item memory. Previous items injected into prompts for diversity.
+7. **Research caching** — Two-layer cache (DB + file) keyed by construct fingerprint with TTL.
+8. **LewMod (automated feedback)** — `--lewmod` replaces human-in-the-loop with LLM senior psychometrician. Returns structured per-item decisions.
+9. **Retry + Fallback provider chain** — LangGraph RetryPolicy + `with_fallbacks()`: OpenRouter → Groq → Ollama. Timeout + min response length triggers.
+10. **Per-agent model configuration** — `agents.toml` for all agent parameters. Pydantic-validated.
+11. **Rich console output** — Colored agent messages with compact structured summaries.
+12. **LangSmith observability** — All LLM calls traced. LangGraph Studio support.
+13. **Run report with metrics** — Final output shows KEEP items with deterministic metric values.
 
 ---
 
 ## 12. Known Limitations vs Paper
 
-1. **Single construct**: Paper demonstrates multiple constructs; our implementation is configured for AAAW but extensible via `constructs.py`.
+1. **Preset-first construct model**: System supports preset or JSON-based custom constructs, but lacks API-level rich metadata controls (target population, constraints, exclusions) found in production systems like MAPIG.
 
-2. **No persistent storage**: Paper doesn't mention this, but our MemorySaver is in-memory only. Production would need PostgresSaver.
+2. **In-memory checkpointer**: `MemorySaver` is in-memory only. Session state is lost if the process restarts. Production would need `PostgresSaver` or `AsyncSqliteSaver`.
 
 3. **Deterministic critic**: Paper uses an LLM-based critic that can make nuanced routing decisions. Our deterministic router follows a fixed phase sequence, which is simpler but less flexible.
 
-4. **Llama vs GPT-4**: Llama 4 Maverick is capable but may produce different quality evaluations compared to GPT-4. The natural language approach mitigates this — there's no strict format to break, so the model can express its assessment freely.
+4. **Llama vs GPT-4**: Llama 4 Maverick is capable but may produce different quality evaluations compared to GPT-4. The structured JSON output + fixer retry mitigates format issues.

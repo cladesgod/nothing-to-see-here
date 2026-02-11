@@ -145,26 +145,6 @@ class TestProviderConfig:
         assert AgentSettings.model_validate(data).get_ollama_model("bias_reviewer") == "default-ollama"
 
 
-class TestEvalConfig:
-    """Test eval configuration."""
-
-    def test_eval_defaults(self):
-        s = AgentSettings()
-        assert s.eval.enabled is True
-        assert s.eval.judge_temperature == 0.0
-        assert s.eval.content_validity_threshold == 0.83
-        assert s.eval.distinctiveness_threshold == 0.35
-        assert s.eval.linguistic_threshold == 0.8
-        assert s.eval.bias_threshold == 0.9
-
-    def test_eval_judge_model_resolution(self):
-        data = {"eval": {"judge_model": "custom/judge"}}
-        assert AgentSettings.model_validate(data).get_model("eval_judge") == "custom/judge"
-
-    def test_eval_judge_falls_back_to_default(self):
-        assert AgentSettings().get_model("eval_judge") == "meta-llama/llama-4-maverick"
-
-
 class TestAgentsTomlFile:
     """Test that the actual agents.toml file parses correctly."""
 
@@ -192,11 +172,3 @@ class TestAgentsTomlFile:
         assert s.providers.groq.enabled is True
         assert s.providers.groq.default_model == "llama-3.3-70b-versatile"
         assert s.providers.ollama.enabled is True
-
-    def test_agents_toml_has_eval_config(self):
-        toml_path = Path(__file__).parent.parent / "agents.toml"
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-        s = AgentSettings.model_validate(data)
-        assert s.eval.enabled is True
-        assert s.eval.judge_model == "meta-llama/llama-4-maverick"

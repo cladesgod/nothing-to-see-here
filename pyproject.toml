@@ -20,9 +20,16 @@ dependencies = [
 dev = [
     "pytest",
     "pytest-asyncio",
-    "ipykernel",
-    "jupyter",
+    "pytest-httpx",
+    "httpx",
     "langgraph-cli[inmem]",
+]
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "prometheus-client>=0.21",
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.2",
 ]
 
 [build-system]

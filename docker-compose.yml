@@ -1,0 +1,73 @@
+# Docker Compose for LM-AIG API
+# Usage: docker compose up
+#
+# For production with PostgreSQL:
+#   docker compose --profile production up
+
+services:
+  # ---- API Server ----
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - AIG_API_KEYS=${AIG_API_KEYS:-dev:dev-key-for-testing}
+      - AIG_MAX_WORKERS=10
+      - AIG_MAX_CONCURRENT_PER_USER=3
+      - AIG_RATE_LIMIT_RPM=10
+      - AIG_RATE_LIMIT_DAILY=100
+    volumes:
+      - ./data:/app/data        # SQLite persistence (dev mode)
+      - ./agents.toml:/app/agents.toml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---- PostgreSQL (production profile) ----
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["production"]
+    environment:
+      POSTGRES_USER: aig
+      POSTGRES_PASSWORD: aig_secret
+      POSTGRES_DB: aig
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aig"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- API with PostgreSQL (production profile) ----
+  api-prod:
+    build: .
+    profiles: ["production"]
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://aig:aig_secret@postgres:5432/aig
+      - AIG_API_KEYS=${AIG_API_KEYS}
+      - AIG_MAX_WORKERS=20
+      - AIG_MAX_CONCURRENT_PER_USER=5
+      - AIG_RATE_LIMIT_RPM=30
+      - AIG_RATE_LIMIT_DAILY=500
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pgdata:

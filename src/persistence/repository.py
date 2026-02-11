@@ -29,6 +29,7 @@ def create_run(
     run_id: str,
     construct_name: str,
     construct_definition: str,
+    construct_fingerprint: str,
     mode: str,
     model: str,
     max_revisions: int,
@@ -36,9 +37,10 @@ def create_run(
     """Create a new pipeline run record. Returns run_id."""
     conn.execute(
         """INSERT INTO runs (id, construct_name, construct_definition,
-           mode, model, max_revisions, started_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (run_id, construct_name, construct_definition, mode, model, max_revisions, _now()),
+           construct_fingerprint, mode, model, max_revisions, started_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (run_id, construct_name, construct_definition, construct_fingerprint,
+         mode, model, max_revisions, _now()),
     )
     conn.commit()
     logger.info("run_created", run_id=run_id, construct=construct_name, mode=mode)
@@ -77,6 +79,37 @@ def save_research(
         (run_id, research_summary, _now()),
     )
     conn.commit()
+
+
+def get_cached_research(
+    conn: sqlite3.Connection,
+    construct_fingerprint: str,
+    ttl_hours: int = 24,
+) -> str | None:
+    """Fetch most recent research_summary for this exact construct.
+
+    Returns None if no research exists or if it's older than ttl_hours.
+    Joins through runs table to match on construct_fingerprint.
+    """
+    row = conn.execute(
+        """SELECT res.research_summary, res.created_at
+           FROM research res
+           JOIN runs r ON res.run_id = r.id
+           WHERE r.construct_fingerprint = ?
+           ORDER BY res.created_at DESC
+           LIMIT 1""",
+        (construct_fingerprint,),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    created = datetime.fromisoformat(row["created_at"])
+    age_hours = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+    if age_hours > ttl_hours:
+        return None
+
+    return row["research_summary"]
 
 
 # ---------------------------------------------------------------------------
@@ -155,63 +188,30 @@ def save_feedback(
 
 
 # ---------------------------------------------------------------------------
-# Eval Results
-# ---------------------------------------------------------------------------
-
-
-def save_eval_result(
-    conn: sqlite3.Connection,
-    run_id: str,
-    item_text: str,
-    dimension_name: str,
-    scores: dict,
-) -> None:
-    """Save evaluation scores for a single item."""
-    conn.execute(
-        """INSERT INTO eval_results (run_id, item_text, dimension_name,
-           content_score, linguistic_score, bias_score, overall_score,
-           content_reasoning, linguistic_reasoning, bias_reasoning,
-           overall_reasoning, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            run_id,
-            item_text,
-            dimension_name,
-            scores.get("content", {}).get("score"),
-            scores.get("linguistic", {}).get("score"),
-            scores.get("bias", {}).get("score"),
-            scores.get("overall", {}).get("score"),
-            scores.get("content", {}).get("reasoning"),
-            scores.get("linguistic", {}).get("reasoning"),
-            scores.get("bias", {}).get("reasoning"),
-            scores.get("overall", {}).get("reasoning"),
-            _now(),
-        ),
-    )
-    conn.commit()
-
-
-# ---------------------------------------------------------------------------
 # Anti-Homogeneity: Read Previous Items
 # ---------------------------------------------------------------------------
 
 
 def get_previous_items(
     conn: sqlite3.Connection,
-    construct_name: str,
+    construct_fingerprint: str,
     exclude_run_id: str | None = None,
     limit: int = 5,
 ) -> list[str]:
-    """Fetch items_text from completed runs for this construct.
+    """Fetch items_text from completed runs with the same construct fingerprint.
 
     Returns up to `limit` most recent final-round items from prior runs.
     Used by the Item Writer to avoid generating similar items across runs.
+
+    Filters by construct_fingerprint (SHA-256 hash of the full construct
+    definition) to ensure memory only returns items from runs that used
+    the exact same construct — not just the same name.
     """
     query = """
         SELECT gr.items_text
         FROM generation_rounds gr
         JOIN runs r ON gr.run_id = r.id
-        WHERE r.construct_name = ?
+        WHERE r.construct_fingerprint = ?
           AND r.status = 'done'
           AND gr.round_number = (
               SELECT MAX(gr2.round_number)
@@ -219,7 +219,7 @@ def get_previous_items(
               WHERE gr2.run_id = gr.run_id
           )
     """
-    params: list = [construct_name]
+    params: list = [construct_fingerprint]
 
     if exclude_run_id:
         query += " AND r.id != ?"

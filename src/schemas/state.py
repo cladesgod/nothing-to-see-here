@@ -11,6 +11,8 @@ from __future__ import annotations
 import operator
 from typing import Annotated, TypedDict
 
+from src.schemas.phases import Phase
+
 
 class ReviewChainState(TypedDict, total=False):
     """State for the inner review-chain subgraph.
@@ -46,21 +48,27 @@ class MainState(TypedDict, total=False):
     # ----- Input -----
     construct_name: str
     construct_definition: str
+    dimension_info: str  # pre-formatted dimension + orbiting text for content reviewer
+    construct_fingerprint: str  # SHA-256 hash of full construct for memory filtering
 
     # ----- Phase tracking -----
-    current_phase: str  # web_research | item_generation | review | human_feedback | revision | done
+    current_phase: Phase
 
     # ----- WebSurfer output -----
     research_summary: str
 
     # ----- Item Writer output (natural language text) -----
     items_text: str
+    active_items_text: str  # Subset reviewed/revised in current round
+    frozen_item_numbers: list[int]  # Item numbers frozen as KEEP across rounds
 
     # ----- Review Chain output (natural language text from Meta Editor) -----
     review_text: str
 
     # ----- Human feedback -----
     human_feedback: str
+    human_item_decisions: dict[str, str]  # JSON-safe Item -> KEEP|REVISE
+    human_global_note: str
 
     # ----- Iteration control -----
     revision_count: int

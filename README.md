@@ -1,8 +1,6 @@
 # LM-AIG: Multi-Agent Automatic Item Generation
 
-LLM-based multi-agent system for generating psychological test items (Likert-scale), based on **Lee et al. (2025)** - *"LLM-Based Multi-Agent AIG"*.
-
-Built with **LangGraph** for orchestration, **Llama models** via **OpenRouter**, and **Tavily** for web research.
+LLM-based multi-agent system for generating psychological test items (Likert-scale), based on **Lee et al. (2025)**.
 
 ## Architecture
 
@@ -19,170 +17,93 @@ Built with **LangGraph** for orchestration, **Llama models** via **OpenRouter**,
             └──────────────────────────────────┘
 ```
 
-**7 Agents:**
-
-| Agent | Role | Temperature |
-|-------|------|-------------|
-| **Critic** | Central orchestrator (deterministic routing) | - |
-| **WebSurfer** | Researches construct via Tavily web search | 0.0 |
-| **Item Writer** | Generates/revises Likert-scale items | 1.0 |
-| **Content Reviewer** | Evaluates content validity (c-value, d-value) | 0.0 |
-| **Linguistic Reviewer** | Grammar, readability, ambiguity check | 0.0 |
-| **Bias Reviewer** | Gender, cultural, socioeconomic fairness | 0.0 |
-| **Meta Editor** | Synthesizes reviews → keep/revise/discard | 0.3 |
+8 agents. Critic routes, 3 reviewers run in parallel, MetaEditor synthesizes. LewMod can replace human feedback for fully automated runs.
 
 ## Setup
 
-### 1. Prerequisites
-
-- Python >= 3.11
-- [OpenRouter API key](https://openrouter.ai/keys)
-- [Tavily API key](https://app.tavily.com)
-- (Optional) [LangSmith API key](https://smith.langchain.com) for tracing
-
-### 2. Install
+**1. Create virtual environment**
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate   # Linux/macOS
+```
+
+**2. Install dependencies**
+
+```bash
 pip install -e ".[dev]"
 ```
 
-### 3. Configure
+**3. Configure API keys**
 
 ```bash
 cp .env.example .env
-# Edit .env with your API keys
 ```
 
-### 4. Run
+Edit `.env` and set:
 
-**CLI (human feedback):**
-```bash
-python run.py
-```
+| Key | Required | Source |
+|-----|----------|--------|
+| `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `TAVILY_API_KEY` | Yes | [app.tavily.com](https://app.tavily.com) |
+| `GROQ_API_KEY` | Optional | [console.groq.com/keys](https://console.groq.com/keys) (fallback provider) |
+| `LANGCHAIN_API_KEY` | Optional | [smith.langchain.com](https://smith.langchain.com) (tracing) |
 
-**CLI (automated feedback via LewMod):**
-```bash
-python run.py --lewmod
-```
+## Configuration
 
-**LangGraph Studio (web UI):**
-```bash
-langgraph dev
-# Open: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
-```
-
-**Jupyter Notebook:**
-```bash
-jupyter notebook notebooks/demo.ipynb
-```
-
-## Agent Configuration
-
-Agent models, temperatures, and parameters are configured in `agents.toml`:
+All agent behavior is controlled via `agents.toml` in the project root:
 
 ```toml
 [defaults]
-model = "meta-llama/llama-4-maverick"
-
-[agents.websurfer]
-model = "meta-llama/llama-4-scout"
-temperature = 0.0
-max_results = 5
-search_depth = "advanced"
+model = "meta-llama/llama-4-maverick"   # Default LLM for all agents
 
 [agents.item_writer]
-temperature = 1.0
-num_items = 8
+temperature = 1.0                       # Creative diversity
+num_items = 8                           # Items per generation cycle
 
-[agents.content_reviewer]
-temperature = 0.0
+[workflow]
+max_revisions = 5                       # Max revision rounds
 
-# See agents.toml for full config
-```
-
-API keys are stored in `.env` (secrets only).
-
-## Reliability: Retry & Fallback Providers
-
-The system has a two-layer reliability mechanism to handle API failures:
-
-**Layer 1 — LangGraph RetryPolicy (node level):**
-When an agent node fails (network timeout, 503, rate limit), LangGraph automatically retries it with exponential backoff. Configured in `agents.toml`:
-
-```toml
-[retry]
-max_attempts = 3        # 1 initial + 2 retries
-initial_interval = 1.0  # Seconds before first retry
-backoff_factor = 2.0    # Exponential backoff multiplier
-```
-
-**Layer 2 — Fallback Provider Chain (LLM level):**
-If the primary provider (OpenRouter) fails, the LLM call cascades to fallback providers:
-
-```
-OpenRouter (primary) → Groq (fallback 1) → Ollama (fallback 2, local)
-```
-
-Configured in `agents.toml`:
-
-```toml
 [providers.groq]
-enabled = true
-default_model = "llama-3.3-70b-versatile"
-
-[providers.ollama]
-enabled = true
-default_model = "gpt-oss:20b"
-base_url = "http://localhost:11434"
+enabled = true                          # Fallback: OpenRouter → Groq → Ollama
 ```
 
-Each agent can override the fallback model:
+See `agents.toml` for full options (models, temperatures, retry policy, fallback providers, JSON fixer settings).
 
-```toml
-[agents.websurfer]
-groq_model = "llama-3.3-70b-versatile"
-ollama_model = "gpt-oss:20b"
-```
+## Usage
 
-Requires `GROQ_API_KEY` in `.env` (Ollama needs no key — runs locally).
+```bash
+# Default: human-in-the-loop feedback, AAAW construct
+python run.py
 
-## Project Structure
+# Automated feedback via LewMod (no human input needed)
+python run.py --lewmod
 
-```
-agents.toml             # Agent config (models, temperatures, parameters)
-src/
-  config.py             # pydantic-settings (.env) + AgentSettings (agents.toml)
-  models.py             # LLM factory with fallback chain (OpenRouter → Groq → Ollama)
-  schemas/              # TypedDict states + construct definitions
-  agents/               # 7 agent implementations
-  graphs/               # LangGraph workflow + review subgraph
-  prompts/              # Prompt templates (from paper Table 2)
-  utils/                # Console output (rich)
-tests/                  # 61 tests (schemas, agents, config, models, graph structure)
-notebooks/demo.ipynb    # End-to-end demo
-run.py                  # CLI entry point
-langgraph.json          # LangGraph Studio configuration
+# Custom psychological construct from JSON file
+python run.py --construct-file examples/custom_construct.json
+
+# Show raw JSON output from reviewers
+python run.py --verbose-json
+
+# LangGraph Studio (web UI)
+langgraph dev
 ```
 
 ## Testing
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v    # 238 tests, no real API calls
 ```
 
 ## Observability
 
-Enable LangSmith tracing by setting in `.env`:
+Set in `.env` to enable LangSmith tracing:
 
 ```env
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=your-key
 LANGCHAIN_PROJECT=lm-aig
 ```
-
-All LLM calls and graph executions will be traced at [smith.langchain.com](https://smith.langchain.com).
 
 ## Reference
 
